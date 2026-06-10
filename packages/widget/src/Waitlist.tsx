@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { WaitlistClient, type WaitlistEntry } from './client'
+import { WaitlistShare, type SharePlatformId, type ShareTarget } from './Share'
+import { WaitlistInviteFriends } from './InviteFriends'
 
 export type WaitlistMode = 'inline' | 'modal'
 export type WaitlistTheme = 'auto' | 'light' | 'dark'
@@ -48,6 +50,15 @@ export interface WaitlistProps {
   /** Disable share buttons after success. */
   hideShare?: boolean
 
+  /** Disable the "Invite friends" panel after success. */
+  hideInvite?: boolean
+
+  /** Restrict / reorder share platforms. */
+  shareTargets?: Array<SharePlatformId | ShareTarget>
+
+  /** Hide the points UI (referral count only). */
+  hidePoints?: boolean
+
   /** Forward to root container. */
   className?: string
   style?: React.CSSProperties
@@ -80,6 +91,9 @@ export function Waitlist(props: WaitlistProps) {
     triggerLabel = 'Join waitlist',
     turnstileToken,
     hideShare,
+    hideInvite,
+    shareTargets,
+    hidePoints,
     className,
     style,
     onSuccess,
@@ -153,9 +167,15 @@ export function Waitlist(props: WaitlistProps) {
         ? (
             <Success
               entry={view.entry}
+              waitlist={waitlist}
+              baseUrl={baseUrl}
               title={successTitle}
               subtitle={successSubtitle}
               hideShare={hideShare}
+              hideInvite={hideInvite}
+              shareTargets={shareTargets}
+              hidePoints={hidePoints}
+              onEntryChange={(entry) => setView({ kind: 'success', entry })}
             />
           )
         : (
@@ -250,9 +270,15 @@ function Form(p: {
 
 function Success(p: {
   entry: WaitlistEntry
+  waitlist: string
+  baseUrl?: string
   title: string
   subtitle: (e: WaitlistEntry) => string
   hideShare?: boolean
+  hideInvite?: boolean
+  shareTargets?: Array<SharePlatformId | ShareTarget>
+  hidePoints?: boolean
+  onEntryChange?: (e: WaitlistEntry) => void
 }) {
   const shareUrl = useMemo(() => {
     if (typeof window === 'undefined') return p.entry.shareUrl
@@ -262,31 +288,66 @@ function Success(p: {
     return u.toString()
   }, [p.entry.refCode, p.entry.shareUrl])
 
-  const tweet = `https://twitter.com/intent/tweet?text=${encodeURIComponent(`I'm #${p.entry.rank} on the waitlist. Join me:`)}&url=${encodeURIComponent(shareUrl)}`
-  const whatsapp = `https://wa.me/?text=${encodeURIComponent(`I'm #${p.entry.rank} on the waitlist — join me: ${shareUrl}`)}`
+  // Optimistically reflect server-awarded points on share/invite without
+  // refetching the whole status (server is the source of truth on next load).
+  const bump = useCallback((points: number, breakdown: WaitlistEntry['pointBreakdown']) => {
+    p.onEntryChange?.({ ...p.entry, points, pointBreakdown: breakdown })
+  }, [p])
 
-  const copy = () => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(shareUrl).catch(() => undefined)
-    }
-  }
+  const pb = p.entry.pointBreakdown
+  const pv = p.entry.pointValues
 
   return (
     <div className="hanzo-waitlist__success">
       <h3 className="hanzo-waitlist__title" style={{ textAlign: 'center' }}>{p.title}</h3>
       <div className="hanzo-waitlist__rank" aria-label={`Rank ${p.entry.rank} of ${p.entry.total}`}>{p.entry.rank.toLocaleString()}</div>
-      <p className="hanzo-waitlist__of" aria-hidden="true">
-        of {p.entry.total.toLocaleString()}
-      </p>
+      <p className="hanzo-waitlist__of" aria-hidden="true">of {p.entry.total.toLocaleString()}</p>
       <p className="hanzo-waitlist__meta">{p.subtitle(p.entry)}</p>
-      {!p.hideShare && (
-        <div className="hanzo-waitlist__share">
-          <a className="hanzo-waitlist__button hanzo-waitlist__button--ghost" href={tweet} target="_blank" rel="noreferrer">Tweet</a>
-          <a className="hanzo-waitlist__button hanzo-waitlist__button--ghost" href={whatsapp} target="_blank" rel="noreferrer">WhatsApp</a>
-          <button type="button" className="hanzo-waitlist__button" onClick={copy}>Copy link</button>
+
+      {!p.hidePoints && (
+        <div className="hanzo-waitlist__score" aria-label={`${p.entry.points} points`}>
+          <div className="hanzo-waitlist__score-num">{p.entry.points.toLocaleString()}<span className="hanzo-waitlist__score-suffix">pts</span></div>
+          <ul className="hanzo-waitlist__score-breakdown" role="list">
+            <li><b>{pb.referrals}</b> referrals <small>×{pv.REFERRAL}</small></li>
+            <li><b>{pb.shares}</b> shares <small>×{pv.SHARE}</small></li>
+            <li><b>{pb.invitesSent}</b> invites <small>×{pv.INVITE_SENT}</small></li>
+            <li><b>{pb.invitesConverted}</b> joined <small>×{pv.INVITE_CONVERTED}</small></li>
+          </ul>
         </div>
       )}
-      <p className="hanzo-waitlist__hint">{p.entry.referralCount.toLocaleString()} referral{p.entry.referralCount === 1 ? '' : 's'}</p>
+
+      {!p.hideShare && (
+        <WaitlistShare
+          waitlist={p.waitlist}
+          refCode={p.entry.refCode}
+          shareUrl={shareUrl}
+          rank={p.entry.rank}
+          total={p.entry.total}
+          baseUrl={p.baseUrl}
+          shareTargets={p.shareTargets}
+          pointValues={p.entry.pointValues}
+          onShared={(_platform, awarded) => {
+            if (awarded > 0) {
+              const next = { ...pb, shares: pb.shares + awarded }
+              bump(p.entry.points + awarded, next)
+            }
+          }}
+        />
+      )}
+
+      {!p.hideInvite && (
+        <WaitlistInviteFriends
+          waitlist={p.waitlist}
+          refCode={p.entry.refCode}
+          baseUrl={p.baseUrl}
+          pointPerInvite={pv.INVITE_SENT}
+          pointPerConversion={pv.INVITE_CONVERTED}
+          onSent={(r) => {
+            const next = { ...pb, invitesSent: pb.invitesSent + r.pointsAwarded }
+            bump(p.entry.points + r.pointsAwarded, next)
+          }}
+        />
+      )}
     </div>
   )
 }

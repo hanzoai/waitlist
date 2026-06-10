@@ -10,9 +10,20 @@
 //   PORT=8090 node server.js
 //
 // Endpoints:
-//   POST /v1/waitlist/join      { waitlist, email, referrerCode?, turnstileToken? }
+//   POST /v1/waitlist/join         { waitlist, email, referrerCode?, turnstileToken? }
 //   GET  /v1/waitlist/status?waitlist=&email=
+//   GET  /v1/waitlist/list?waitlist=&page=&pageSize=
+//   POST /v1/waitlist/track-share  { waitlist, refCode, platform }
+//   POST /v1/waitlist/invite       { waitlist, refCode, emails: [...], message? }
 //   GET  /v1/waitlist/export?waitlist=    (Bearer auth via WAITLIST_ADMIN_SECRET)
+//
+// Points engine:
+//   • each entry has `points` and a per-source breakdown
+//   • referral (someone joins via your refCode): POINTS_REFERRAL (default 10)
+//   • share-action click (per platform per day): POINTS_SHARE (default 2)
+//   • invite-sent (per valid email submitted): POINTS_INVITE_SENT (default 1)
+//   • invited friend joins: POINTS_INVITE_CONVERTED (default 5)
+//   Leaderboard sorts by points DESC, createdAt ASC.
 
 import http from 'node:http'
 import crypto from 'node:crypto'
@@ -21,6 +32,19 @@ const PORT = Number(process.env.PORT ?? 8090)
 const ADMIN_SECRET = process.env.WAITLIST_ADMIN_SECRET ?? ''
 const RATE_LIMIT = Number(process.env.WAITLIST_RATE_LIMIT ?? 5)
 const RATE_WINDOW_MS = 60 * 60 * 1000
+
+// Point values — overridable via env so each consumer can tune.
+const POINTS = {
+  REFERRAL:          Number(process.env.POINTS_REFERRAL ?? 10),
+  SHARE:             Number(process.env.POINTS_SHARE ?? 2),
+  INVITE_SENT:       Number(process.env.POINTS_INVITE_SENT ?? 1),
+  INVITE_CONVERTED:  Number(process.env.POINTS_INVITE_CONVERTED ?? 5),
+}
+const INVITE_MAX_BATCH = Number(process.env.WAITLIST_INVITE_MAX ?? 50)
+const SHARE_PLATFORMS = new Set([
+  'webshare','email','x','twitter','linkedin','facebook',
+  'reddit','telegram','whatsapp','sms','copy','mastodon','bluesky','threads',
+])
 
 const REF_ALPHABET = '6789BCDFGHJKLMNPQRTWbcdfghjkmnpqrtwz'
 const DISPOSABLE = new Set([
@@ -67,13 +91,27 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 function isValidEmail(s) { return typeof s === 'string' && s.length <= 254 && EMAIL_RE.test(s) }
 function domain(email) { const i = email.lastIndexOf('@'); return i < 0 ? '' : email.slice(i+1).toLowerCase() }
 
+function totalPoints(entry) {
+  return (entry.pointBreakdown.referrals
+    + entry.pointBreakdown.shares
+    + entry.pointBreakdown.invitesSent
+    + entry.pointBreakdown.invitesConverted)
+}
+
 function computeRank(list, entry) {
   const all = [...list.entries.values()]
   const total = all.length
-  // Sort: referralCount DESC, createdAt ASC
-  all.sort((a, b) => b.referralCount - a.referralCount || a.createdAt - b.createdAt)
+  // Sort: points DESC, createdAt ASC (earlier joiners break ties)
+  all.sort((a, b) => totalPoints(b) - totalPoints(a) || a.createdAt - b.createdAt)
   const rank = all.findIndex((e) => e.email === entry.email) + 1
   return { rank, total }
+}
+
+function findEntryByRefCode(list, refCode) {
+  for (const e of list.entries.values()) {
+    if (e.refCode === refCode) return e
+  }
+  return null
 }
 
 function entryToJoinResponse(list, entry, alreadyJoined) {
@@ -85,6 +123,9 @@ function entryToJoinResponse(list, entry, alreadyJoined) {
     refCode: entry.refCode,
     rank,
     total,
+    points: totalPoints(entry),
+    pointBreakdown: { ...entry.pointBreakdown },
+    pointValues: { ...POINTS },
     referralCount: entry.referralCount,
     shareUrl: `?ref=${entry.refCode}`,
     ...(alreadyJoined ? { alreadyJoined: true } : {}),
@@ -109,6 +150,9 @@ function entryToStatusResponse(list, entry) {
     rank,
     total,
     aheadOf: Math.max(0, total - rank),
+    points: totalPoints(entry),
+    pointBreakdown: { ...entry.pointBreakdown },
+    pointValues: { ...POINTS },
     referralCount: entry.referralCount,
     shareUrl: `?ref=${entry.refCode}`,
   }
@@ -175,12 +219,19 @@ async function handleJoin(req, res) {
   if (existing) return send(res, 200, entryToJoinResponse(list, existing, true))
 
   // Credit referrer (if any, and not self-ref).
+  let referrerEntry = null
   if (referrerCode) {
-    for (const e of list.entries.values()) {
-      if (e.refCode === referrerCode && e.email !== email) {
-        e.referralCount += 1
-        break
+    referrerEntry = findEntryByRefCode(list, referrerCode)
+    if (referrerEntry && referrerEntry.email !== email) {
+      referrerEntry.referralCount += 1
+      referrerEntry.pointBreakdown.referrals += POINTS.REFERRAL
+      // If this email was previously invited by the referrer, also credit
+      // the conversion bonus.
+      if (referrerEntry.invitedEmails?.has(email)) {
+        referrerEntry.pointBreakdown.invitesConverted += POINTS.INVITE_CONVERTED
       }
+    } else {
+      referrerEntry = null
     }
   }
 
@@ -199,9 +250,107 @@ async function handleJoin(req, res) {
     referredBy: referrerCode || '',
     referralCount: 0,
     createdAt: Date.now(),
+    // Gamification state.
+    pointBreakdown: { referrals: 0, shares: 0, invitesSent: 0, invitesConverted: 0 },
+    sharedPlatforms: new Map(),  // platform -> last ISO date (yyyy-mm-dd)
+    invitedEmails: new Set(),    // emails this entry has sent invitations to
   }
   list.entries.set(email, entry)
   return send(res, 200, entryToJoinResponse(list, entry, false))
+}
+
+// --- POST /v1/waitlist/track-share ---
+
+async function handleTrackShare(req, res) {
+  let body
+  try { body = await readJson(req) } catch { return err(res, 400, 'invalid json') }
+  const slug = (body.waitlist || '').toString().trim()
+  const refCode = (body.refCode || '').toString().trim()
+  const platform = (body.platform || '').toString().trim().toLowerCase()
+
+  if (!slug || !refCode || !platform) return err(res, 400, 'waitlist, refCode, platform required')
+  if (!SHARE_PLATFORMS.has(platform)) return err(res, 400, `unknown platform: ${platform}`)
+
+  const list = lists.get(slug)
+  if (!list) return err(res, 404, 'waitlist not found')
+  const entry = findEntryByRefCode(list, refCode)
+  if (!entry) return err(res, 404, 'entry not found')
+
+  const today = new Date().toISOString().slice(0, 10)
+  const lastDay = entry.sharedPlatforms.get(platform)
+  const alreadyToday = lastDay === today
+  if (!alreadyToday) {
+    entry.sharedPlatforms.set(platform, today)
+    entry.pointBreakdown.shares += POINTS.SHARE
+  }
+  return send(res, 200, {
+    ok: true,
+    awarded: alreadyToday ? 0 : POINTS.SHARE,
+    alreadyClaimed: alreadyToday,
+    points: totalPoints(entry),
+    pointBreakdown: { ...entry.pointBreakdown },
+  })
+}
+
+// --- POST /v1/waitlist/invite ---
+
+async function handleInvite(req, res) {
+  let body
+  try { body = await readJson(req) } catch { return err(res, 400, 'invalid json') }
+  const slug = (body.waitlist || '').toString().trim()
+  const refCode = (body.refCode || '').toString().trim()
+  const emails = Array.isArray(body.emails) ? body.emails : []
+  const message = (body.message || '').toString().slice(0, 1000)
+
+  if (!slug || !refCode || emails.length === 0) {
+    return err(res, 400, 'waitlist, refCode, emails required')
+  }
+  if (emails.length > INVITE_MAX_BATCH) {
+    return err(res, 400, `max ${INVITE_MAX_BATCH} emails per batch`)
+  }
+
+  const ip = clientIp(req)
+  if (!allow(`invite:${ip}`)) return err(res, 429, 'rate limit exceeded')
+
+  const list = lists.get(slug)
+  if (!list) return err(res, 404, 'waitlist not found')
+  const entry = findEntryByRefCode(list, refCode)
+  if (!entry) return err(res, 404, 'entry not found')
+
+  const seen = new Set()
+  const sent = []
+  const skipped = []   // already on the list
+  const invalid = []
+  const duplicates = []
+
+  for (const raw of emails) {
+    const e = (raw || '').toString().trim().toLowerCase()
+    if (!e) continue
+    if (seen.has(e)) { duplicates.push(e); continue }
+    seen.add(e)
+    if (!isValidEmail(e)) { invalid.push(e); continue }
+    if (DISPOSABLE.has(domain(e))) { invalid.push(e); continue }
+    if (e === entry.email) { invalid.push(e); continue } // don't invite yourself
+    if (list.entries.has(e)) { skipped.push(e); continue }
+    entry.invitedEmails.add(e)
+    sent.push(e)
+    entry.pointBreakdown.invitesSent += POINTS.INVITE_SENT
+    // In production this is where you'd enqueue a real email send. The
+    // mock just logs so you can see what would have been sent.
+    console.log(`[mock-api] invite from ${entry.email} -> ${e}` +
+      (message ? ` ("${message.slice(0, 40)}${message.length > 40 ? '…' : ''}")` : ''))
+  }
+
+  return send(res, 200, {
+    ok: true,
+    sent: sent.length,
+    skipped: skipped.length,
+    invalid: invalid.length,
+    duplicates: duplicates.length,
+    pointsAwarded: sent.length * POINTS.INVITE_SENT,
+    points: totalPoints(entry),
+    pointBreakdown: { ...entry.pointBreakdown },
+  })
 }
 
 function handleStatus(req, url, res) {
@@ -226,7 +375,7 @@ function handleList(req, url, res) {
   const isAdmin = !!ADMIN_SECRET && (req.headers['authorization'] || '') === `Bearer ${ADMIN_SECRET}`
 
   const sorted = [...list.entries.values()].sort(
-    (a, b) => b.referralCount - a.referralCount || a.createdAt - b.createdAt
+    (a, b) => totalPoints(b) - totalPoints(a) || a.createdAt - b.createdAt
   )
   const total = sorted.length
   const start = (page - 1) * pageSize
@@ -234,6 +383,7 @@ function handleList(req, url, res) {
     rank: start + i + 1,
     email: isAdmin ? e.email : maskEmail(e.email),
     refCode: isAdmin ? e.refCode : null,
+    points: totalPoints(e),
     referralCount: e.referralCount,
     createdAt: new Date(e.createdAt).toISOString(),
   }))
@@ -291,6 +441,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/v1/waitlist/join') return await handleJoin(req, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/status') return handleStatus(req, url, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/list')   return handleList(req, url, res)
+    if (req.method === 'POST' && url.pathname === '/v1/waitlist/track-share') return await handleTrackShare(req, res)
+    if (req.method === 'POST' && url.pathname === '/v1/waitlist/invite') return await handleInvite(req, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/export') return handleExport(req, url, res)
   } catch (e) {
     console.error('[mock-api]', e)
@@ -342,6 +494,11 @@ function seedList(slug, n) {
     }
     // Zipf-ish: rank^-1.4 normalized to roughly produce top ~40 referrals.
     const referralCount = Math.max(0, Math.floor(40 * Math.pow(1 / Math.max(1, i + 1), 1.4) + (rand() < 0.04 ? Math.floor(rand() * 6) : 0)))
+    // Synthesize a plausible pointBreakdown so seeded leaderboard has real
+    // gamification depth, not just referral counts.
+    const shareEvents = Math.min(8, Math.floor(referralCount * 0.6 + rand() * 3))
+    const invitesSent = Math.min(20, Math.floor(referralCount * 1.5 + rand() * 4))
+    const invitesConverted = Math.min(referralCount, Math.floor(referralCount * 0.4))
     list.entries.set(email, {
       waitlist: slug,
       email,
@@ -349,6 +506,14 @@ function seedList(slug, n) {
       referredBy: '',
       referralCount,
       createdAt: start + i * 60_000,
+      pointBreakdown: {
+        referrals: referralCount * POINTS.REFERRAL,
+        shares: shareEvents * POINTS.SHARE,
+        invitesSent: invitesSent * POINTS.INVITE_SENT,
+        invitesConverted: invitesConverted * POINTS.INVITE_CONVERTED,
+      },
+      sharedPlatforms: new Map(),
+      invitedEmails: new Set(),
     })
   }
 }
