@@ -42,16 +42,19 @@ boot. Three endpoints are mounted under `/v1/waitlist`.
 ```bash
 pnpm install
 pnpm --filter @hanzo/waitlist build
-pnpm --filter @hanzo/waitlist-demo dev
-# open http://localhost:3000
+
+# Terminal 1: backend (mock reference impl, in-memory)
+pnpm --filter @hanzo/waitlist-mock-api dev   # listens on :8090
+
+# Terminal 2: demo
+NEXT_PUBLIC_BASE_URL=http://localhost:8090 \
+  pnpm --filter @hanzo/waitlist-demo dev     # http://localhost:3000
 ```
 
-Set `NEXT_PUBLIC_BASE_URL` to a Base instance with the waitlist plugin
-registered. For local dev, run Base on `:8090` and:
-
-```bash
-export NEXT_PUBLIC_BASE_URL=http://localhost:8090
-```
+For production you swap `mock-api` for a real Hanzo Base instance with
+`plugins/waitlist` registered. The mock implements the exact same
+`/v1/waitlist/{join,status,export}` contract — it's both the demo
+backend and the executable spec.
 
 ## Theming
 

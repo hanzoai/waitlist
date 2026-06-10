@@ -42,16 +42,18 @@ waitlist.MustRegister(app, waitlist.Config{
 ```bash
 pnpm install
 pnpm --filter @hanzo/waitlist build
-pnpm --filter @hanzo/waitlist-demo dev
-# 打开 http://localhost:3000
+
+# 终端 1:后端(内存版参考实现)
+pnpm --filter @hanzo/waitlist-mock-api dev   # 监听 :8090
+
+# 终端 2:演示
+NEXT_PUBLIC_BASE_URL=http://localhost:8090 \
+  pnpm --filter @hanzo/waitlist-demo dev     # http://localhost:3000
 ```
 
-将 `NEXT_PUBLIC_BASE_URL` 指向已注册 waitlist 插件的 Base 实例。本地
-跑 Base 于 `:8090`:
-
-```bash
-export NEXT_PUBLIC_BASE_URL=http://localhost:8090
-```
+生产环境把 `mock-api` 换成注册了 `plugins/waitlist` 的真正 Base 实例
+即可。Mock 实现的就是 `/v1/waitlist/{join,status,export}` 那份契约
+—— 既是演示后端,也是可执行的规范。
 
 ## 主题
 
