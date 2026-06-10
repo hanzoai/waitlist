@@ -17,6 +17,12 @@ export type {
 export { WaitlistInviteFriends } from './InviteFriends'
 export type { WaitlistInviteFriendsProps } from './InviteFriends'
 
+export { WaitlistActivity } from './Activity'
+export type { WaitlistActivityProps, ActivityFormatter } from './Activity'
+
+export { useCountUp } from './useCountUp'
+export type { UseCountUpOptions } from './useCountUp'
+
 export { WaitlistClient, join, status } from './client'
 export type {
   JoinInput,
@@ -26,6 +32,10 @@ export type {
   TrackShareResponse,
   InviteInput,
   InviteResponse,
+  ActivityInput,
+  ActivityResponse,
+  ActivityEvent,
+  ActivityType,
   WaitlistEntry,
   PointBreakdown,
   PointValues,

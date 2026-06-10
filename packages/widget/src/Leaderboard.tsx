@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { WaitlistClient, type LeaderboardEntry, type LeaderboardPage } from './client'
+import { WaitlistClient, type LeaderboardEntry } from './client'
+import { useCountUp } from './useCountUp'
 
 export type LeaderboardMode = 'load-more' | 'paginate'
 
@@ -28,6 +29,11 @@ export interface WaitlistLeaderboardProps {
   loadMoreLabel?: string
   /** Text shown after the last page in load-more mode. Set to '' to hide. */
   exhaustedLabel?: string
+  /**
+   * Animated count-up on the total ("1,205 on the list"). Pass `false`
+   * to disable, or an object to tune the duration. Default true / 1200ms.
+   */
+  animateTotal?: boolean | { duration?: number }
   /** Optional className on the root container. */
   className?: string
   style?: React.CSSProperties
@@ -53,6 +59,7 @@ export function WaitlistLeaderboard(props: WaitlistLeaderboardProps) {
     mode = 'load-more',
     loadMoreLabel = 'Show more',
     exhaustedLabel = "That's everyone",
+    animateTotal = true,
     className,
     style,
     renderEmail,
@@ -93,6 +100,9 @@ export function WaitlistLeaderboard(props: WaitlistLeaderboardProps) {
   }, [load])
 
   const total = meta?.total ?? 0
+  const animDuration = animateTotal === false ? 0 : (typeof animateTotal === 'object' ? animateTotal.duration ?? 1200 : 1200)
+  const animatedTotal = useCountUp(meta ? total : null, { duration: animDuration })
+  const displayedTotal = animateTotal === false ? total : animatedTotal
   const isPaginate = mode === 'paginate'
   const isLastPage = meta ? page >= meta.totalPages : false
   const isExhausted = mode === 'load-more' && meta && entries.length >= meta.total
@@ -113,7 +123,7 @@ export function WaitlistLeaderboard(props: WaitlistLeaderboardProps) {
           <div>
             <h3 className="hanzo-waitlist__title">Leaderboard</h3>
             <p className="hanzo-waitlist__subtitle">
-              {total.toLocaleString()} on the list
+              <span className="hanzo-waitlist-lb__total">{displayedTotal.toLocaleString()}</span> on the list
             </p>
           </div>
           {isPaginate && (
