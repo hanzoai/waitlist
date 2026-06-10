@@ -1,7 +1,14 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { Waitlist, WaitlistLeaderboard, WaitlistActivity, WaitlistClient } from '@hanzo/waitlist'
+import {
+  Waitlist,
+  WaitlistLeaderboard,
+  WaitlistActivity,
+  WaitlistClient,
+  usePersistedEntry,
+  writePersistedEntry,
+} from '@hanzo/waitlist'
 
 // Subtle developer-only knob — press `b` to cycle brand presets.
 const PRESETS = [
@@ -37,27 +44,23 @@ function HanzoMark({ size = 32 }: { size?: number }) {
   )
 }
 
-interface CachedJoin { email: string; rank?: number; refCode?: string }
-
 export default function HomePage() {
   const [preset, setPreset] = useState<(typeof PRESETS)[number]['id']>('neutral')
   const presetClass = PRESETS.find((p) => p.id === preset)?.className ?? ''
 
-  // Pulls from localStorage so the topbar CTA flips to "#N" after join.
-  const [cached, setCached] = useState<CachedJoin | null>(null)
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(`hanzo-waitlist:${WAITLIST_SLUG}`)
-      if (raw) setCached(JSON.parse(raw))
-    } catch { /* noop */ }
-  }, [])
+  // Single source of truth — shared with the widget. Reactive across tabs
+  // AND across same-tab writes (via the hook's internal event subscription).
+  const cached = usePersistedEntry(WAITLIST_SLUG)
 
-  // After join: refetch status so the topbar shows the freshest rank.
+  // After mount: refetch status so the topbar pill shows the freshest rank.
+  // The hook owns the cache shape; this just keeps the rank fresh.
   useEffect(() => {
     if (!cached?.email) return
     const c = new WaitlistClient({ baseUrl: BASE_URL || undefined })
     c.status({ waitlist: WAITLIST_SLUG, email: cached.email }).then((r) => {
-      if ('ok' in r && r.ok) setCached((prev) => prev ? { ...prev, rank: r.rank, refCode: r.refCode } : null)
+      if ('ok' in r && r.ok) {
+        writePersistedEntry(WAITLIST_SLUG, { email: r.email, rank: r.rank, refCode: r.refCode })
+      }
     })
   }, [cached?.email])
 
@@ -178,9 +181,6 @@ export default function HomePage() {
               title="Join the waitlist"
               subtitle="Free and instant. No spam."
               shareTargets={['webshare', 'x', 'linkedin', 'email', 'reddit', 'telegram', 'whatsapp', 'sms', 'copy']}
-              onSuccess={(entry) => {
-                setCached({ email: entry.email, rank: entry.rank, refCode: entry.refCode })
-              }}
             />
           </div>
         </div>

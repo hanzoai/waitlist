@@ -3,6 +3,23 @@ import './styles.css'
 export { Waitlist } from './Waitlist'
 export type { WaitlistMode, WaitlistTheme, WaitlistProps } from './Waitlist'
 
+export { WaitlistJoin } from './Join'
+export type { WaitlistJoinProps } from './Join'
+
+export { WaitlistStatus } from './Status'
+export type { WaitlistStatusProps } from './Status'
+
+export {
+  usePersistedEntry,
+  readPersistedEntry,
+  writePersistedEntry,
+  clearPersistedEntry,
+  captureReferrerFromUrl,
+  readPendingReferrer,
+  entryKey,
+} from './storage'
+export type { PersistedEntry } from './storage'
+
 export { WaitlistLeaderboard } from './Leaderboard'
 export type { WaitlistLeaderboardProps } from './Leaderboard'
 
