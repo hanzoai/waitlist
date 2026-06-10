@@ -1,7 +1,7 @@
 'use client'
 
-import { useState } from 'react'
-import { Waitlist } from '@hanzo/waitlist'
+import { useEffect, useState } from 'react'
+import { Waitlist, WaitlistLeaderboard } from '@hanzo/waitlist'
 
 // Generic preset swatches. NO brand names — this widget ships neutral.
 // Each consumer brings their own palette by overriding --hw-accent /
@@ -41,6 +41,17 @@ const WAITLIST_SLUG = process.env.NEXT_PUBLIC_WAITLIST_SLUG || 'demo'
 export default function HomePage() {
   const [preset, setPreset] = useState<(typeof PRESETS)[number]['id']>('neutral')
   const presetClass = PRESETS.find((p) => p.id === preset)?.className ?? ''
+
+  // Pull the joined email out of localStorage so the leaderboard can
+  // highlight the current viewer's row. Stored by the <Waitlist> widget
+  // on successful join.
+  const [myEmail, setMyEmail] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`hanzo-waitlist:${WAITLIST_SLUG}`)
+      if (raw) setMyEmail(JSON.parse(raw).email)
+    } catch { /* noop */ }
+  }, [])
 
   return (
     <main>
@@ -95,6 +106,24 @@ export default function HomePage() {
               subtitle="Climb the list by referring friends."
             />
           </div>
+        </div>
+      </section>
+
+      <section className="section container">
+        <h2 className="h2">Leaderboard</h2>
+        <p className="lede" style={{ margin: '0 0 24px' }}>
+          Paginated public view of the same list. Same monochrome surface as
+          the widget &mdash; brand swap follows whichever preset is selected
+          above. Emails are masked unless an admin token is attached. If
+          you've joined, your row is highlighted.
+        </p>
+        <div className={presetClass}>
+          <WaitlistLeaderboard
+            waitlist={WAITLIST_SLUG}
+            baseUrl={BASE_URL || undefined}
+            pageSize={25}
+            highlightEmail={myEmail}
+          />
         </div>
       </section>
 

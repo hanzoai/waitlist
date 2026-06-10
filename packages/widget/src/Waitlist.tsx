@@ -75,7 +75,7 @@ export function Waitlist(props: WaitlistProps) {
     submitLabel = 'Join',
     successTitle = "You're on the list",
     successSubtitle = (e) => (e.aheadOf && e.aheadOf > 0
-      ? `${e.aheadOf.toLocaleString()} people are behind you. Refer friends to climb.`
+      ? `${e.aheadOf.toLocaleString()} ${e.aheadOf === 1 ? 'person is' : 'people are'} behind you. Refer friends to climb.`
       : 'Refer friends to climb the list.'),
     triggerLabel = 'Join waitlist',
     turnstileToken,
@@ -275,6 +275,9 @@ function Success(p: {
     <div className="hanzo-waitlist__success">
       <h3 className="hanzo-waitlist__title" style={{ textAlign: 'center' }}>{p.title}</h3>
       <div className="hanzo-waitlist__rank" aria-label={`Rank ${p.entry.rank} of ${p.entry.total}`}>{p.entry.rank.toLocaleString()}</div>
+      <p className="hanzo-waitlist__of" aria-hidden="true">
+        of {p.entry.total.toLocaleString()}
+      </p>
       <p className="hanzo-waitlist__meta">{p.subtitle(p.entry)}</p>
       {!p.hideShare && (
         <div className="hanzo-waitlist__share">
