@@ -1,0 +1,11 @@
+{
+  "name": "@hanzo/waitlist-mock-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference implementation of the /v1/waitlist/* contract. In-memory. Used by the demo and as a spec.",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  }
+}
