@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { WaitlistClient, type LeaderboardEntry, type LeaderboardPage } from './client'
 
+export type LeaderboardMode = 'load-more' | 'paginate'
+
 export interface WaitlistLeaderboardProps {
   /** Slug or id of the waitlist. */
   waitlist: string
@@ -16,6 +18,16 @@ export interface WaitlistLeaderboardProps {
    * localStorage under `hanzo-waitlist:<slug>` — read it there to wire up.
    */
   highlightEmail?: string
+  /**
+   * `'load-more'` (default) — single button at the bottom that appends the
+   * next chunk; no page counters or arrows.
+   * `'paginate'` — classic next/prev with a page count.
+   */
+  mode?: LeaderboardMode
+  /** Override the load-more button text. */
+  loadMoreLabel?: string
+  /** Text shown after the last page in load-more mode. Set to '' to hide. */
+  exhaustedLabel?: string
   /** Optional className on the root container. */
   className?: string
   style?: React.CSSProperties
@@ -38,6 +50,9 @@ export function WaitlistLeaderboard(props: WaitlistLeaderboardProps) {
     pageSize = 25,
     theme = 'auto',
     highlightEmail,
+    mode = 'load-more',
+    loadMoreLabel = 'Show more',
+    exhaustedLabel = "That's everyone",
     className,
     style,
     renderEmail,
@@ -45,27 +60,51 @@ export function WaitlistLeaderboard(props: WaitlistLeaderboardProps) {
 
   const client = useMemo(() => new WaitlistClient({ baseUrl }), [baseUrl])
   const [page, setPage] = useState(1)
-  const [data, setData] = useState<LeaderboardPage | null>(null)
+  const [entries, setEntries] = useState<LeaderboardEntry[]>([])
+  const [meta, setMeta] = useState<{ total: number; totalPages: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(async (p: number) => {
+  // For load-more, accumulate; for paginate, replace.
+  const load = useCallback(async (p: number, append: boolean) => {
     setBusy(true)
     setError(null)
     const res = await client.list({ waitlist, page: p, pageSize })
     if ('ok' in res && res.ok) {
-      setData(res)
+      setMeta({ total: res.total, totalPages: res.totalPages })
+      setEntries((prev) => {
+        if (!append) return res.entries
+        // Dedup by rank in case of overlapping fetches.
+        const seen = new Set(prev.map((e) => e.rank))
+        const fresh = res.entries.filter((e) => !seen.has(e.rank))
+        return [...prev, ...fresh]
+      })
     } else {
       setError(res.message || 'failed to load')
     }
     setBusy(false)
   }, [client, pageSize, waitlist])
 
-  useEffect(() => { load(page) }, [load, page])
+  // Initial load and whenever waitlist/pageSize change.
+  useEffect(() => {
+    setPage(1)
+    setEntries([])
+    load(1, false)
+  }, [load])
+
+  const total = meta?.total ?? 0
+  const isPaginate = mode === 'paginate'
+  const isLastPage = meta ? page >= meta.totalPages : false
+  const isExhausted = mode === 'load-more' && meta && entries.length >= meta.total
+
+  const onLoadMore = useCallback(() => {
+    if (busy) return
+    const next = page + 1
+    setPage(next)
+    load(next, true)
+  }, [busy, load, page])
 
   const themeAttr = theme === 'auto' ? undefined : theme
-  const totalPages = data?.totalPages ?? 1
-  const total = data?.total ?? 0
 
   return (
     <div className={['hanzo-waitlist', className].filter(Boolean).join(' ')} data-theme={themeAttr} style={style}>
@@ -77,18 +116,20 @@ export function WaitlistLeaderboard(props: WaitlistLeaderboardProps) {
               {total.toLocaleString()} on the list
             </p>
           </div>
-          <Pager
-            page={data?.page ?? page}
-            totalPages={totalPages}
-            busy={busy}
-            onChange={setPage}
-          />
+          {isPaginate && (
+            <Pager
+              page={page}
+              totalPages={meta?.totalPages ?? 1}
+              busy={busy}
+              onChange={(p) => { setPage(p); load(p, false) }}
+            />
+          )}
         </header>
 
         {error && <p className="hanzo-waitlist__error" role="alert">{error}</p>}
 
-        <ol className="hanzo-waitlist-lb__list" start={data ? (data.page - 1) * data.pageSize + 1 : 1}>
-          {(data?.entries ?? []).map((e) => {
+        <ol className="hanzo-waitlist-lb__list">
+          {entries.map((e) => {
             const mine = highlightEmail && e.email.toLowerCase() === highlightEmail.toLowerCase()
             return (
               <li
@@ -106,18 +147,41 @@ export function WaitlistLeaderboard(props: WaitlistLeaderboardProps) {
               </li>
             )
           })}
+          {!error && entries.length === 0 && (
+            <li className="hanzo-waitlist-lb__empty">
+              {busy ? 'Loading…' : 'No one yet — be the first.'}
+            </li>
+          )}
         </ol>
 
-        {totalPages > 1 && (
+        {!isPaginate && meta && !isExhausted && (
+          <footer className="hanzo-waitlist-lb__foot">
+            <button
+              type="button"
+              className="hanzo-waitlist__button hanzo-waitlist__button--ghost hanzo-waitlist-lb__more"
+              onClick={onLoadMore}
+              disabled={busy}
+            >
+              {busy ? 'Loading…' : loadMoreLabel}
+            </button>
+          </footer>
+        )}
+        {!isPaginate && isExhausted && exhaustedLabel && (
+          <footer className="hanzo-waitlist-lb__foot">
+            <span className="hanzo-waitlist-lb__exhausted">{exhaustedLabel}</span>
+          </footer>
+        )}
+        {isPaginate && (meta?.totalPages ?? 1) > 1 && (
           <footer className="hanzo-waitlist-lb__foot">
             <Pager
-              page={data?.page ?? page}
-              totalPages={totalPages}
+              page={page}
+              totalPages={meta?.totalPages ?? 1}
               busy={busy}
-              onChange={setPage}
+              onChange={(p) => { setPage(p); load(p, false) }}
             />
           </footer>
         )}
+        {!isPaginate && isLastPage && false /* suppress noop */}
       </div>
     </div>
   )
