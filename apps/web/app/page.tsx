@@ -1,50 +1,51 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { Waitlist, WaitlistLeaderboard, WaitlistClient } from '@hanzo/waitlist'
+import { useEffect, useState } from 'react'
+import { Waitlist, WaitlistLeaderboard } from '@hanzo/waitlist'
 
-// Generic preset swatches. NO brand names — this widget ships neutral.
-// Each consumer brings their own palette by overriding --hw-accent /
-// --hw-accent-fg / --hw-radius on a wrapper class.
+// Subtle developer-only knob — flip the brand to prove the widget is
+// truly brand-neutral. Hidden by default; press `b` to cycle.
 const PRESETS = [
-  { id: 'neutral',  label: 'Neutral',  className: '' },
-  { id: 'preset-a', label: 'Preset A', className: 'preset-a' },
-  { id: 'preset-b', label: 'Preset B', className: 'preset-b' },
-  { id: 'preset-c', label: 'Preset C', className: 'preset-c' },
-  { id: 'preset-d', label: 'Preset D', className: 'preset-d' },
+  { id: 'neutral',  className: '' },
+  { id: 'preset-a', className: 'preset-a' },
+  { id: 'preset-b', className: 'preset-b' },
+  { id: 'preset-c', className: 'preset-c' },
+  { id: 'preset-d', className: 'preset-d' },
 ] as const
-
-// Placeholder "logo" for the demo only — generic monogram, intentionally
-// not a real brand mark. Real consumers pass their own <img> or <svg>.
-function DemoLogo() {
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      width="28"
-      height="28"
-      role="img"
-      aria-label="Demo brand mark"
-      style={{ color: 'var(--hw-fg, currentColor)' }}
-    >
-      <rect x="2" y="2" width="28" height="28" rx="6" fill="currentColor" />
-      <path
-        d="M10 22V10h2.4l5.2 8V10H20v12h-2.4l-5.2-8v8H10z"
-        fill="var(--hw-bg, #fff)"
-      />
-    </svg>
-  )
-}
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || ''
 const WAITLIST_SLUG = process.env.NEXT_PUBLIC_WAITLIST_SLUG || 'demo'
+
+// Hanzo monochrome mark — source: ~/work/hanzo/logo (getMonoSVG).
+// Inlined so the demo stays self-contained without a runtime dep on
+// @hanzo/logo. Fill uses currentColor so it inherits theme automatically.
+function HanzoMark({ size = 48 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 67 67"
+      width={size}
+      height={size}
+      role="img"
+      aria-label="Hanzo"
+      style={{ display: 'block' }}
+    >
+      <path d="M22.21 67V44.6369H0V67H22.21Z" fill="currentColor" />
+      <path d="M0 44.6369L22.21 46.8285V44.6369H0Z" fill="currentColor" opacity=".75" />
+      <path d="M66.7038 22.3184H22.2534L0.0878906 44.6367H44.4634L66.7038 22.3184Z" fill="currentColor" />
+      <path d="M22.21 0H0V22.3184H22.21V0Z" fill="currentColor" />
+      <path d="M66.7198 0H44.5098V22.3184H66.7198V0Z" fill="currentColor" />
+      <path d="M66.6753 22.3185L44.5098 20.0822V22.3185H66.6753Z" fill="currentColor" opacity=".75" />
+      <path d="M66.7198 67V44.6369H44.5098V67H66.7198Z" fill="currentColor" />
+    </svg>
+  )
+}
 
 export default function HomePage() {
   const [preset, setPreset] = useState<(typeof PRESETS)[number]['id']>('neutral')
   const presetClass = PRESETS.find((p) => p.id === preset)?.className ?? ''
 
-  // Pull the joined email out of localStorage so the leaderboard can
-  // highlight the current viewer's row. Stored by the <Waitlist> widget
-  // on successful join.
+  // Pull the joined email out of localStorage so the leaderboard highlights
+  // the current viewer's row. Stored by the <Waitlist> widget on join.
   const [myEmail, setMyEmail] = useState<string | undefined>(undefined)
   useEffect(() => {
     try {
@@ -53,150 +54,82 @@ export default function HomePage() {
     } catch { /* noop */ }
   }, [])
 
-  // Live total — the social-proof number in the hero.
-  const client = useMemo(() => new WaitlistClient({ baseUrl: BASE_URL || undefined }), [])
-  const [total, setTotal] = useState<number | null>(null)
+  // Dev-only: press `b` to cycle brand presets (proves brand-neutrality
+  // without dominating the chrome).
   useEffect(() => {
-    let mounted = true
-    client.list({ waitlist: WAITLIST_SLUG, page: 1, pageSize: 1 }).then((r) => {
-      if (!mounted) return
-      if ('ok' in r && r.ok) setTotal(r.total)
-    })
-    return () => { mounted = false }
-  }, [client])
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'b' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const target = e.target as HTMLElement | null
+        const tag = target?.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return
+        setPreset((p) => {
+          const i = PRESETS.findIndex((x) => x.id === p)
+          return PRESETS[(i + 1) % PRESETS.length].id
+        })
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   return (
-    <main>
-      <section className="hero container" aria-labelledby="hero-title">
-        <p className="eyebrow">@hanzo/waitlist</p>
-        <h1 id="hero-title" className="h1">
-          A waitlist that wears <em>your</em> colors, not ours.
-        </h1>
-        <p className="lede">
-          One monochromatic widget, every brand. Configurable points, real
-          referrals, leaderboard, share to anywhere &mdash; all atop a single
-          Base plugin. No Redis. No SaaS dependency.
-        </p>
-        <div className="hero-stats" role="status">
-          <div className="hero-stat">
-            <span className="hero-stat__num">
-              {total === null ? <span className="skeleton skeleton--num" aria-hidden="true">—</span> : total.toLocaleString()}
-            </span>
-            <span className="hero-stat__label">on the list</span>
-          </div>
-          <div className="hero-stat">
-            <span className="hero-stat__num">10</span>
-            <span className="hero-stat__label">share platforms</span>
-          </div>
-          <div className="hero-stat">
-            <span className="hero-stat__num">3</span>
-            <span className="hero-stat__label">lines to ship</span>
-          </div>
+    <main className={presetClass}>
+      <header className="topbar container">
+        <a href="/" className="topbar__brand" aria-label="Hanzo home">
+          <HanzoMark size={32} />
+        </a>
+      </header>
+
+      <section className="section container" aria-labelledby="lb-title">
+        <div className="section-head section-head--center">
+          <h1 id="lb-title" className="h1 h1--lg">Waitlist</h1>
+          <p className="lede lede--center">
+            Climb the leaderboard. Refer friends, share to anywhere, send invites &mdash;
+            every action earns points.
+          </p>
         </div>
+        <WaitlistLeaderboard
+          waitlist={WAITLIST_SLUG}
+          baseUrl={BASE_URL || undefined}
+          pageSize={10}
+          highlightEmail={myEmail}
+        />
       </section>
 
-      <section className="section container" aria-labelledby="demo-title">
-        <div className="section-head">
-          <h2 id="demo-title" className="h2">Live demo</h2>
-          <div className="swatch-row" role="tablist" aria-label="Color preset">
-            {PRESETS.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                role="tab"
-                aria-selected={preset === p.id}
-                className="swatch"
-                data-active={preset === p.id}
-                onClick={() => setPreset(p.id)}
-              >
-                {p.label}
-              </button>
-            ))}
+      <section className="section section--alt container" aria-labelledby="join-title">
+        <div className="join-wrap">
+          <div className="join-intro">
+            <h2 id="join-title" className="h2 h2--lg">Join the waitlist</h2>
+            <p className="join-lede">
+              Drop your email to lock in your spot. Then climb the list by sharing,
+              referring, and inviting friends.
+            </p>
+            <ul className="join-bullets">
+              <li><b>10 points</b> per friend you refer who joins</li>
+              <li><b>2 points</b> per platform you share on (once per day)</li>
+              <li><b>5 points</b> bonus when an invited friend signs up</li>
+            </ul>
           </div>
-        </div>
-
-        <div className={`primary-grid ${presetClass}`}>
-          <div className="primary-grid__leaderboard">
-            <WaitlistLeaderboard
-              waitlist={WAITLIST_SLUG}
-              baseUrl={BASE_URL || undefined}
-              pageSize={10}
-              highlightEmail={myEmail}
-            />
-          </div>
-          <div className="primary-grid__widget">
+          <div className="join-widget">
             <Waitlist
               waitlist={WAITLIST_SLUG}
               baseUrl={BASE_URL || undefined}
-              logo={<DemoLogo />}
-              subtitle="Climb the list by sharing and referring."
+              logo={<HanzoMark size={28} />}
+              title="Reserve your spot"
+              subtitle="Free and instant. No spam."
             />
           </div>
-        </div>
-
-        <details className="code-reveal">
-          <summary>Show the override CSS</summary>
-          <div className="code-block">
-            <pre>{`/* the entire ${preset === 'neutral' ? '(default neutral)' : `'${preset}'`} re-skin */
-.${preset === 'neutral' ? 'your-brand' : preset} {
-  --hw-accent: <accent color>;
-  --hw-accent-fg: <text on accent>;
-  --hw-radius: <corner radius>;
-}`}</pre>
-          </div>
-        </details>
-      </section>
-
-      <section className="section container" aria-labelledby="ships-title">
-        <h2 id="ships-title" className="h2">Everything ships in the box</h2>
-        <div className="grid">
-          <div className="feature">
-            <h3>Base backend</h3>
-            <p>One Go plugin: collections, REST, atomic referrals, abuse defenses. No Redis, no SaaS dependency, no per-brand fork.</p>
-          </div>
-          <div className="feature">
-            <h3>Brand-neutral by default</h3>
-            <p>Zero hardcoded colors, zero logos, zero brand names in the package. CSS variables do the rest.</p>
-          </div>
-          <div className="feature">
-            <h3>React or drop-in element</h3>
-            <p>The React component, the framework-free fetch client, or the {'<hanzo-waitlist>'} custom element &mdash; same one source.</p>
-          </div>
-          <div className="feature">
-            <h3>Gamified points</h3>
-            <p>Every action awards points: referrals, shares, invites sent, friends converted. Per-platform daily caps. Tunable per consumer.</p>
-          </div>
-          <div className="feature">
-            <h3>10 share targets</h3>
-            <p>Web Share API + Email, X, LinkedIn, Facebook, Reddit, Telegram, WhatsApp, SMS, Copy link. Each with its own point value.</p>
-          </div>
-          <div className="feature">
-            <h3>Invite friends by email</h3>
-            <p>Paste a list, send invites, earn points &mdash; bonus when invitees join. Rate-limited, dedup-checked, disposable-blocked.</p>
-          </div>
-          <div className="feature">
-            <h3>Paginated leaderboard</h3>
-            <p>Public-safe view: emails masked unless an admin token is attached. Highlights the viewer&rsquo;s own row. Brand re-skin follows the widget.</p>
-          </div>
-          <div className="feature">
-            <h3>Anti-abuse built in</h3>
-            <p>Cloudflare Turnstile verify, per-IP sliding-window rate limits, disposable-domain blocklist, atomic SQL transactions.</p>
-          </div>
-        </div>
-      </section>
-
-      <section className="section container" aria-labelledby="install-title">
-        <h2 id="install-title" className="h2">Three lines to ship</h2>
-        <div className="code-block code-block--lg">
-          <pre>{`import { Waitlist } from '@hanzo/waitlist'
-import '@hanzo/waitlist/styles.css'
-
-<Waitlist waitlist="my-product" baseUrl="https://api.example.com" />`}</pre>
         </div>
       </section>
 
       <footer className="footer container">
-        <p>MIT &middot; one way to do it &middot; DRY, composable, orthogonal</p>
+        <div className="footer__row">
+          <div className="footer__brand">
+            <HanzoMark size={22} />
+            <span>Hanzo &middot; built on Base</span>
+          </div>
+          <div className="footer__meta">MIT &middot; one way to do it</div>
+        </div>
       </footer>
     </main>
   )
