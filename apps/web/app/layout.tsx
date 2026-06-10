@@ -1,18 +1,15 @@
-import './globals.css';
+import './globals.css'
+import '@hanzo/waitlist/styles.css'
 
 export const metadata = {
-  title: 'V-Waitlist - The Free Viral Waiting List',
-  description: 'Open-source, serverless viral waiting list for indie hackers. Zero cost, 3 lines to integrate.',
-};
+  title: 'Hanzo Waitlist',
+  description: 'Monochromatic, brand-neutral viral waitlist. Backed by Hanzo Base.',
+}
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>{children}</body>
     </html>
-  );
+  )
 }

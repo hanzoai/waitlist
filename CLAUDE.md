@@ -4,84 +4,82 @@
 
 ## 项目概述
 
-**V-Waitlist** 是一个面向独立开发者的开源、无服务器病毒式等待名单系统。目标是成为 Viral Loops 等付费服务的零成本替代方案。
+**Hanzo Waitlist** 是单色、品牌中立的等待名单组件。包内零品牌色、
+零 logo、零身份标识 —— 每个使用方自行实现品牌层(变量覆盖)。
 
-**当前状态**: 早期规划阶段 - 仅有文档，尚未实现任何代码。
+- **前端**: React 组件 + 原生 fetch 客户端 + Web Component 三种入口,
+  以 `@hanzo/waitlist` 名义发布,位于 `packages/widget/`。
+- **后端**: Hanzo Base 插件,位于 `~/work/hanzo/base/plugins/waitlist/`。
+  不依赖 Redis、Upstash 或任何第三方 SaaS。
+- **演示站点**: `apps/web/`(Next.js)。
 
-## 技术栈
+## 架构原则
 
-- **计算层**: Next.js with Edge Runtime (Vercel)
-- **存储层**: Upstash Redis (支持 HTTP API 的无服务器 Redis)
-- **前端 SDK**: Preact + Vite (编译为单个 `v-waitlist.min.js` 文件)
-- **安全层**: Cloudflare Turnstile (验证码) + Upstash RateLimit
-- **UI**: 原生 Web Components (`<v-waitlist>` 自定义元素)
+1. **一种做法**: 后端逻辑全部集中在一个 Go 插件里。前端只有一个组件
+   包,既输出 React、又输出 vanilla 客户端、又输出 `<hanzo-waitlist>`
+   自定义元素 —— 同一份源码,三个出口。
+2. **单色**: 组件内部不写任何品牌色。所有颜色都派生自 `--hw-*` CSS
+   变量,默认走中性色。任何品牌想要自定义,覆盖几个变量即可。
+3. **原子性**: 推荐计数 / 邀请码分配 / 条目持久化全部在 SQL 事务里
+   完成(`app.RunInTransaction`),并发竞争由 SQLite 解决,不需要
+   Redis Lua 脚本。
 
-## 计划的 Monorepo 结构
+## 仓库结构
 
 ```
-apps/web       # 落地页 / 演示站点
-apps/api       # Next.js 后端（Edge API 路由）
-packages/sdk   # 前端组件源码
+packages/widget/        @hanzo/waitlist 源码
+apps/web/               演示站点(Next.js + React 19)
+docs/                   architecture / api / widget 三份文档
+docs/archive/           历史规划文档(已归档)
 ```
 
-## 核心架构
+服务端在另一个仓库:`~/work/hanzo/base/plugins/waitlist/`。
 
-### 数据模型 (Redis)
+## 数据模型(Base 集合)
 
-所有数据存储在 Upstash Redis 中：
+| 集合 | 字段 |
+|------|------|
+| `waitlists` | id, slug(唯一), name, createdAt, updatedAt |
+| `waitlist_entries` | id, waitlist→relation, email, refCode, referredBy, referralCount, createdAt |
 
-1. **排行榜** (ZSET): `waitlist:leaderboard:{project_id}`
-   - 分数公式: `(推荐人数 * 1000000) + (最大时间戳 - 当前时间戳)`
-   - 分数越高，排名越靠前
+索引:`UNIQUE(waitlist,email)`、`UNIQUE(waitlist,refCode)`、
+`(waitlist, referralCount DESC, createdAt ASC)`。
 
-2. **用户资料** (HASH): `user:{project_id}:{email}`
-   - 字段: `id`, `ref_code`, `referred_by`, `position`, `created_at`
+## API 端点
 
-3. **邀请码映射** (STRING): `ref:{project_id}:{ref_code}` → `email`
+- `POST /v1/waitlist/join` 注册条目,可带 `referrerCode` 与 Turnstile token
+- `GET /v1/waitlist/status?waitlist=&email=` 查询排名
+- `GET /v1/waitlist/export?waitlist=` 管理员导出 CSV(超级用户或共享密钥)
 
-### API 端点
+## 防滥用
 
-- `POST /api/join` - 用户注册及推荐跟踪
-- `GET /api/status?email=xxx` - 查询用户当前排名
-- `GET /api/export` - 导出数据为 CSV（仅管理员）
-
-### 关键：原子操作
-
-所有 Redis 操作必须使用 Lua 脚本确保原子性，防止高并发下的竞态条件。核心 `JOIN_SCRIPT` 见 README 中的 `lib/redis-scripts.ts`。
-
-## 前端集成
-
-两种集成方式：
-
-1. **Web Component**:
-   ```html
-   <script src="https://cdn.v-waitlist.com/sdk.js"></script>
-   <v-waitlist project-id="xyz" mode="modal|input"></v-waitlist>
-   ```
-
-2. **仅 API 调用**:
-   ```javascript
-   import { joinWaitlist } from 'v-waitlist-sdk';
-   const result = await joinWaitlist({ email: 'user@example.com' });
-   ```
-
-## 防刷措施
-
-- Cloudflare Turnstile 验证（注册时必需）
-- 速率限制：每个 IP 每小时最多 5 次注册
+- Cloudflare Turnstile 验证(可选,留空则跳过)
+- 进程内滑动窗口限流(默认 5 次/IP/小时)
 - 一次性邮箱域名拦截
-- 异常活动检测（同一 IP、同一推荐码、超过 10 个推荐）
 
 ## 环境变量
 
-部署所需变量：
-- `UPSTASH_REDIS_REST_URL` - Upstash Redis REST API 地址
-- `UPSTASH_REDIS_REST_TOKEN` - Upstash Redis 认证令牌
+演示站点(`apps/web/.env.local`):
+- `NEXT_PUBLIC_BASE_URL` 指向 Base 实例
+- `NEXT_PUBLIC_WAITLIST_SLUG` 默认 `demo`
 
-## 一键部署
+Base 服务端:
+- `TURNSTILE_SECRET_KEY` (可选)
+- `WAITLIST_ADMIN_SECRET` (可选,启用共享密钥导出)
 
-`vercel.json` 配置支持 Vercel 的 "Deploy" 按钮，实现即时克隆部署：
-- 用户点击按钮
-- Vercel 克隆仓库
-- 用户输入 Redis 凭证
-- 2 分钟内完成部署
+## 开发命令
+
+```bash
+pnpm install
+pnpm --filter @hanzo/waitlist dev          # 组件库 Vite dev
+pnpm --filter @hanzo/waitlist typecheck    # tsc 校验
+pnpm --filter @hanzo/waitlist build        # 输出 dist/
+pnpm --filter @hanzo/waitlist-demo dev     # Next.js 演示站点
+```
+
+## 不要做的事
+
+- 不要重新引入 Redis / Upstash。Base 即数据库,SQL 事务即原子性。
+- 不要在组件源码里写任何具体颜色值;品牌色全部走 CSS 变量。
+- 不要为每个品牌写单独的组件包;参数化即可。
+- 不要在组件里挂载 Turnstile —— 站点宿主负责挂载,组件只接 token。
