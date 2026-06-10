@@ -82,6 +82,32 @@ export interface InviteResponse {
   pointBreakdown: PointBreakdown
 }
 
+export type ActivityType = 'join' | 'share' | 'invite' | 'referral'
+
+export interface ActivityEvent {
+  ts: number
+  type: ActivityType
+  who: string
+  source?: 'direct' | 'referral'
+  platform?: string
+  invited?: string
+}
+
+export interface ActivityInput {
+  waitlist: string
+  limit?: number
+  types?: ActivityType[]
+}
+
+export interface ActivityResponse {
+  ok: true
+  waitlist: string
+  /** Server wall-clock at the time of response — use this to compute
+   * relative times consistently even with client clock skew. */
+  now: number
+  entries: ActivityEvent[]
+}
+
 export interface ListInput {
   waitlist: string
   page?: number
@@ -186,6 +212,14 @@ export class WaitlistClient {
       body: JSON.stringify(input),
     })
     return this.parseGeneric<InviteResponse>(res)
+  }
+
+  async activity(input: ActivityInput): Promise<Result<ActivityResponse>> {
+    const q = new URLSearchParams({ waitlist: input.waitlist })
+    if (input.limit) q.set('limit', String(input.limit))
+    if (input.types?.length) q.set('types', input.types.join(','))
+    const res = await this.fetchFn(this.url(`/activity?${q}`), { method: 'GET' })
+    return this.parseGeneric<ActivityResponse>(res)
   }
 
   /**

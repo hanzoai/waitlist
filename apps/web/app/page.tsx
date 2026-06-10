@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { Waitlist, WaitlistLeaderboard, WaitlistClient } from '@hanzo/waitlist'
+import { Waitlist, WaitlistLeaderboard, WaitlistActivity, WaitlistClient } from '@hanzo/waitlist'
 
 // Subtle developer-only knob — press `b` to cycle brand presets.
 const PRESETS = [
@@ -126,7 +126,7 @@ export default function HomePage() {
         </div>
       </header>
 
-      <section className="section section--first container" aria-labelledby="lb-title">
+      <section className="section section--first section--glow container" aria-labelledby="lb-title">
         <div className="section-head section-head--center">
           <h1 id="lb-title" className="h1 h1--lg">Waitlist</h1>
           <p className="lede lede--center">
@@ -134,13 +134,26 @@ export default function HomePage() {
             every action earns points.
           </p>
         </div>
-        <WaitlistLeaderboard
-          waitlist={WAITLIST_SLUG}
-          baseUrl={BASE_URL || undefined}
-          pageSize={10}
-          highlightEmail={cached?.email}
-          loadMoreLabel="Show more"
-        />
+        <div className="board-grid">
+          <div className="board-grid__main">
+            <WaitlistLeaderboard
+              waitlist={WAITLIST_SLUG}
+              baseUrl={BASE_URL || undefined}
+              pageSize={10}
+              highlightEmail={cached?.email}
+              loadMoreLabel="Show more"
+            />
+          </div>
+          <aside className="board-grid__aside">
+            <WaitlistActivity
+              waitlist={WAITLIST_SLUG}
+              baseUrl={BASE_URL || undefined}
+              limit={10}
+              pollInterval={12000}
+              heading="Live"
+            />
+          </aside>
+        </div>
       </section>
 
       <section className="section section--alt container" aria-labelledby="join-title" id="join">
@@ -164,6 +177,7 @@ export default function HomePage() {
               logo={<HanzoMark size={28} />}
               title="Join the waitlist"
               subtitle="Free and instant. No spam."
+              shareTargets={['webshare', 'x', 'linkedin', 'email', 'reddit', 'telegram', 'whatsapp', 'sms', 'copy']}
               onSuccess={(entry) => {
                 setCached({ email: entry.email, rank: entry.rank, refCode: entry.refCode })
               }}

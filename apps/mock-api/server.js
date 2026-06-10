@@ -13,6 +13,7 @@
 //   POST /v1/waitlist/join         { waitlist, email, referrerCode?, turnstileToken? }
 //   GET  /v1/waitlist/status?waitlist=&email=
 //   GET  /v1/waitlist/list?waitlist=&page=&pageSize=
+//   GET  /v1/waitlist/activity?waitlist=&limit=&types=
 //   POST /v1/waitlist/track-share  { waitlist, refCode, platform }
 //   POST /v1/waitlist/invite       { waitlist, refCode, emails: [...], message? }
 //   GET  /v1/waitlist/export?waitlist=    (Bearer auth via WAITLIST_ADMIN_SECRET)
@@ -41,6 +42,9 @@ const POINTS = {
   INVITE_CONVERTED:  Number(process.env.POINTS_INVITE_CONVERTED ?? 5),
 }
 const INVITE_MAX_BATCH = Number(process.env.WAITLIST_INVITE_MAX ?? 50)
+const ACTIVITY_MAX_HISTORY = Number(process.env.ACTIVITY_MAX_HISTORY ?? 200)
+const ACTIVITY_LIMIT_CAP = Number(process.env.ACTIVITY_LIMIT_CAP ?? 100)
+const ACTIVITY_TYPES = new Set(['join', 'share', 'invite', 'referral'])
 const SHARE_PLATFORMS = new Set([
   'webshare','email','x','twitter','linkedin','facebook',
   'reddit','telegram','whatsapp','sms','copy','mastodon','bluesky','threads',
@@ -53,15 +57,24 @@ const DISPOSABLE = new Set([
   'throwaway.email','fakeinbox.com',
 ])
 
-// In-memory store: slug -> { entries: Map<email, Entry> }
+// In-memory store: slug -> { entries: Map<email, Entry>, activity: [Event...] }
 const lists = new Map()
 function listOf(slug) {
   let l = lists.get(slug)
   if (!l) {
-    l = { entries: new Map() }
+    l = { entries: new Map(), activity: [] }
     lists.set(slug, l)
   }
+  if (!l.activity) l.activity = []
   return l
+}
+
+// Push an event; ring-buffer to ACTIVITY_MAX_HISTORY.
+function pushActivity(list, evt) {
+  list.activity.push({ ts: Date.now(), ...evt })
+  if (list.activity.length > ACTIVITY_MAX_HISTORY) {
+    list.activity.splice(0, list.activity.length - ACTIVITY_MAX_HISTORY)
+  }
 }
 
 // Sliding-window rate limit keyed by IP.
@@ -256,6 +269,11 @@ async function handleJoin(req, res) {
     invitedEmails: new Set(),    // emails this entry has sent invitations to
   }
   list.entries.set(email, entry)
+  // Activity log: a join, and a separate referral event if applicable.
+  pushActivity(list, { type: 'join', who: maskEmail(email), source: referrerEntry ? 'referral' : 'direct' })
+  if (referrerEntry) {
+    pushActivity(list, { type: 'referral', who: maskEmail(referrerEntry.email), invited: maskEmail(email) })
+  }
   return send(res, 200, entryToJoinResponse(list, entry, false))
 }
 
@@ -282,6 +300,7 @@ async function handleTrackShare(req, res) {
   if (!alreadyToday) {
     entry.sharedPlatforms.set(platform, today)
     entry.pointBreakdown.shares += POINTS.SHARE
+    pushActivity(list, { type: 'share', who: maskEmail(entry.email), platform })
   }
   return send(res, 200, {
     ok: true,
@@ -335,6 +354,7 @@ async function handleInvite(req, res) {
     entry.invitedEmails.add(e)
     sent.push(e)
     entry.pointBreakdown.invitesSent += POINTS.INVITE_SENT
+    pushActivity(list, { type: 'invite', who: maskEmail(entry.email), invited: maskEmail(e) })
     // In production this is where you'd enqueue a real email send. The
     // mock just logs so you can see what would have been sent.
     console.log(`[mock-api] invite from ${entry.email} -> ${e}` +
@@ -398,6 +418,33 @@ function handleList(req, url, res) {
   })
 }
 
+// --- GET /v1/waitlist/activity ---
+
+function handleActivity(req, url, res) {
+  const slug = (url.searchParams.get('waitlist') || '').trim()
+  if (!slug) return err(res, 400, 'waitlist is required')
+  const list = lists.get(slug)
+  const limit = Math.max(1, Math.min(ACTIVITY_LIMIT_CAP, Number(url.searchParams.get('limit') || 20)))
+  const typesParam = (url.searchParams.get('types') || '').trim()
+  const typeFilter = typesParam
+    ? new Set(typesParam.split(',').map((s) => s.trim().toLowerCase()).filter((s) => ACTIVITY_TYPES.has(s)))
+    : null
+
+  if (!list) {
+    return send(res, 200, { ok: true, waitlist: slug, now: Date.now(), entries: [] })
+  }
+
+  const filtered = (typeFilter ? list.activity.filter((e) => typeFilter.has(e.type)) : list.activity)
+  // Most-recent first.
+  const sliced = filtered.slice(Math.max(0, filtered.length - limit)).reverse()
+  return send(res, 200, {
+    ok: true,
+    waitlist: slug,
+    now: Date.now(),
+    entries: sliced,
+  })
+}
+
 function handleExport(req, url, res) {
   const auth = req.headers['authorization'] || ''
   if (!ADMIN_SECRET || auth !== `Bearer ${ADMIN_SECRET}`) {
@@ -441,6 +488,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/v1/waitlist/join') return await handleJoin(req, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/status') return handleStatus(req, url, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/list')   return handleList(req, url, res)
+    if (req.method === 'GET'  && url.pathname === '/v1/waitlist/activity') return handleActivity(req, url, res)
     if (req.method === 'POST' && url.pathname === '/v1/waitlist/track-share') return await handleTrackShare(req, res)
     if (req.method === 'POST' && url.pathname === '/v1/waitlist/invite') return await handleInvite(req, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/export') return handleExport(req, url, res)
@@ -516,6 +564,26 @@ function seedList(slug, n) {
       invitedEmails: new Set(),
     })
   }
+  // Seed recent activity so the live ticker shows action on first page load.
+  const seedTypes = ['join','share','invite','referral']
+  const platforms = ['x','linkedin','copy','email','reddit','telegram']
+  const sample = [...list.entries.values()].sort(() => rand() - 0.5).slice(0, 30)
+  for (let i = 0; i < 30; i++) {
+    const e = sample[i] || sample[0]
+    if (!e) break
+    const type = seedTypes[Math.floor(rand() * seedTypes.length)]
+    const ts = Date.now() - Math.floor(rand() * 4 * 60 * 60 * 1000) // last 4h
+    if (type === 'join') {
+      list.activity.push({ ts, type, who: maskEmail(e.email), source: rand() < 0.5 ? 'direct' : 'referral' })
+    } else if (type === 'share') {
+      list.activity.push({ ts, type, who: maskEmail(e.email), platform: platforms[Math.floor(rand() * platforms.length)] })
+    } else if (type === 'invite') {
+      list.activity.push({ ts, type, who: maskEmail(e.email), invited: maskEmail(sample[(i + 1) % sample.length].email) })
+    } else {
+      list.activity.push({ ts, type, who: maskEmail(e.email), invited: maskEmail(sample[(i + 1) % sample.length].email) })
+    }
+  }
+  list.activity.sort((a, b) => a.ts - b.ts)
 }
 
 server.listen(PORT, () => {

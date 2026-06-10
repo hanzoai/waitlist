@@ -80,11 +80,18 @@
 }
 
 .hanzo-waitlist__card {
+  position: relative;
   background: var(--hw-bg);
   border: 1px solid var(--hw-border);
   border-radius: var(--hw-radius, 12px);
   padding: 22px;
-  box-shadow: var(--hw-shadow);
+  /* Glossy multi-layer shadow + subtle inner top highlight (light) and a
+   * faint border darkening at the bottom for a real-card feel.
+   * Stays monochrome — only --hw-fg / --hw-bg mix involved. */
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--hw-bg) 100%, transparent),
+    0 1px 2px 0 color-mix(in srgb, var(--hw-fg) 6%, transparent),
+    0 8px 28px -8px color-mix(in srgb, var(--hw-fg) 8%, transparent);
 }
 
 @media (max-width: 480px) {
@@ -593,14 +600,20 @@
   grid-template-columns: 64px 1fr auto;
   align-items: center;
   gap: 10px;
-  padding: 10px 4px;
+  padding: 10px 8px;
   border-bottom: 1px solid var(--hw-border);
   font-size: 14px;
-  transition: background 100ms ease;
+  border-radius: 6px;
+  transition: background 140ms ease, transform 140ms ease;
 }
 
 .hanzo-waitlist-lb__row:hover {
   background: var(--hw-surface-2, transparent);
+  transform: translateX(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hanzo-waitlist-lb__row:hover { transform: none; }
 }
 
 @media (max-width: 420px) {
@@ -660,6 +673,109 @@
   color: var(--hw-muted);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.hanzo-waitlist-lb__total {
+  color: var(--hw-fg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Activity ticker */
+
+.hanzo-waitlist-act {
+  max-width: none;
+  width: 100%;
+}
+
+.hanzo-waitlist-act__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hanzo-waitlist-act__head .hanzo-waitlist__title { margin: 0; }
+
+.hanzo-waitlist-act__pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--hw-accent, var(--hw-fg));
+  box-shadow: 0 0 0 0 var(--hw-accent, var(--hw-fg));
+  animation: hw-act-pulse 1.8s ease-out infinite;
+}
+
+@keyframes hw-act-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--hw-accent, var(--hw-fg)) 70%, transparent); }
+  70%  { box-shadow: 0 0 0 8px color-mix(in srgb, var(--hw-accent, var(--hw-fg)) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--hw-accent, var(--hw-fg)) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hanzo-waitlist-act__pulse { animation: none; }
+}
+
+.hanzo-waitlist-act__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hanzo-waitlist-act__row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--hw-border) 60%, transparent);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--hw-fg);
+}
+
+.hanzo-waitlist-act__row:last-child { border-bottom: 0; }
+
+.hanzo-waitlist-act__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--hw-fg);
+  opacity: 0.6;
+}
+
+.hanzo-waitlist-act__dot--share    { background: var(--hw-accent, var(--hw-fg)); }
+.hanzo-waitlist-act__dot--invite   { opacity: 0.4; }
+.hanzo-waitlist-act__dot--referral { background: var(--hw-accent, var(--hw-fg)); opacity: 0.85; }
+
+.hanzo-waitlist-act__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hanzo-waitlist-act__text b {
+  color: var(--hw-fg);
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+.hanzo-waitlist-act__time {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--hw-muted);
+  white-space: nowrap;
+}
+
+@media (max-width: 420px) {
+  .hanzo-waitlist-act__row { font-size: 12px; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 8px; }
+  .hanzo-waitlist-act__text b { font-size: 11px; }
 }
 
 .hanzo-waitlist-lb__empty {
