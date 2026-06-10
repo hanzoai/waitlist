@@ -1,10 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { Waitlist, WaitlistLeaderboard } from '@hanzo/waitlist'
+import { useCallback, useEffect, useState } from 'react'
+import { Waitlist, WaitlistLeaderboard, WaitlistClient } from '@hanzo/waitlist'
 
-// Subtle developer-only knob — flip the brand to prove the widget is
-// truly brand-neutral. Hidden by default; press `b` to cycle.
+// Subtle developer-only knob — press `b` to cycle brand presets.
 const PRESETS = [
   { id: 'neutral',  className: '' },
   { id: 'preset-a', className: 'preset-a' },
@@ -16,10 +15,8 @@ const PRESETS = [
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || ''
 const WAITLIST_SLUG = process.env.NEXT_PUBLIC_WAITLIST_SLUG || 'demo'
 
-// Hanzo monochrome mark — source: ~/work/hanzo/logo (getMonoSVG).
-// Inlined so the demo stays self-contained without a runtime dep on
-// @hanzo/logo. Fill uses currentColor so it inherits theme automatically.
-function HanzoMark({ size = 48 }: { size?: number }) {
+// Hanzo monochrome mark — inlined from ~/work/hanzo/logo getMonoSVG.
+function HanzoMark({ size = 32 }: { size?: number }) {
   return (
     <svg
       viewBox="0 0 67 67"
@@ -40,47 +37,96 @@ function HanzoMark({ size = 48 }: { size?: number }) {
   )
 }
 
+interface CachedJoin { email: string; rank?: number; refCode?: string }
+
 export default function HomePage() {
   const [preset, setPreset] = useState<(typeof PRESETS)[number]['id']>('neutral')
   const presetClass = PRESETS.find((p) => p.id === preset)?.className ?? ''
 
-  // Pull the joined email out of localStorage so the leaderboard highlights
-  // the current viewer's row. Stored by the <Waitlist> widget on join.
-  const [myEmail, setMyEmail] = useState<string | undefined>(undefined)
+  // Pulls from localStorage so the topbar CTA flips to "#N" after join.
+  const [cached, setCached] = useState<CachedJoin | null>(null)
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`hanzo-waitlist:${WAITLIST_SLUG}`)
-      if (raw) setMyEmail(JSON.parse(raw).email)
+      if (raw) setCached(JSON.parse(raw))
     } catch { /* noop */ }
   }, [])
 
-  // Dev-only: press `b` to cycle brand presets (proves brand-neutrality
-  // without dominating the chrome).
+  // After join: refetch status so the topbar shows the freshest rank.
+  useEffect(() => {
+    if (!cached?.email) return
+    const c = new WaitlistClient({ baseUrl: BASE_URL || undefined })
+    c.status({ waitlist: WAITLIST_SLUG, email: cached.email }).then((r) => {
+      if ('ok' in r && r.ok) setCached((prev) => prev ? { ...prev, rank: r.rank, refCode: r.refCode } : null)
+    })
+  }, [cached?.email])
+
+  // Dev-only: press `b` to cycle brand presets.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'b' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        const target = e.target as HTMLElement | null
-        const tag = target?.tagName
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return
-        setPreset((p) => {
-          const i = PRESETS.findIndex((x) => x.id === p)
-          return PRESETS[(i + 1) % PRESETS.length].id
-        })
-      }
+      if (e.key !== 'b' || e.metaKey || e.ctrlKey || e.altKey) return
+      const target = e.target as HTMLElement | null
+      if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return
+      setPreset((p) => {
+        const i = PRESETS.findIndex((x) => x.id === p)
+        return PRESETS[(i + 1) % PRESETS.length].id
+      })
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  const scrollToJoin = useCallback(() => {
+    const el = document.getElementById('join')
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    // Focus the first focusable input inside the widget.
+    setTimeout(() => {
+      const input = el.querySelector<HTMLInputElement>('.hanzo-waitlist__input')
+      input?.focus({ preventScroll: true })
+    }, 420)
+  }, [])
+
+  const shareNow = useCallback(async () => {
+    if (!cached?.refCode) return
+    const url = new URL(window.location.href)
+    url.search = ''
+    url.searchParams.set('ref', cached.refCode)
+    const text = cached.rank ? `I'm #${cached.rank.toLocaleString()} on the waitlist. Climb with me:` : 'Join the waitlist:'
+    if ('share' in navigator) {
+      try { await navigator.share({ text, url: url.toString() }) } catch { /* user cancelled */ }
+    } else if (navigator.clipboard) {
+      await navigator.clipboard.writeText(url.toString())
+    }
+  }, [cached])
+
+  const joined = !!cached?.email
+
   return (
     <main className={presetClass}>
-      <header className="topbar container">
-        <a href="/" className="topbar__brand" aria-label="Hanzo home">
-          <HanzoMark size={32} />
-        </a>
+      <header className="topbar">
+        <div className="topbar__inner container">
+          <a href="/" className="topbar__brand" aria-label="Hanzo home">
+            <HanzoMark size={28} />
+            <span className="topbar__wordmark">Hanzo</span>
+          </a>
+          <div className="topbar__cta">
+            {joined ? (
+              <button type="button" className="cta cta--solid" onClick={shareNow} aria-label="Share your waitlist link">
+                <span className="cta__rank">#{(cached?.rank ?? 0).toLocaleString()}</span>
+                <span className="cta__sep" aria-hidden="true">·</span>
+                <span>Share</span>
+              </button>
+            ) : (
+              <button type="button" className="cta cta--solid" onClick={scrollToJoin}>
+                Join the waitlist
+              </button>
+            )}
+          </div>
+        </div>
       </header>
 
-      <section className="section container" aria-labelledby="lb-title">
+      <section className="section section--first container" aria-labelledby="lb-title">
         <div className="section-head section-head--center">
           <h1 id="lb-title" className="h1 h1--lg">Waitlist</h1>
           <p className="lede lede--center">
@@ -92,16 +138,17 @@ export default function HomePage() {
           waitlist={WAITLIST_SLUG}
           baseUrl={BASE_URL || undefined}
           pageSize={10}
-          highlightEmail={myEmail}
+          highlightEmail={cached?.email}
+          loadMoreLabel="Show more"
         />
       </section>
 
-      <section className="section section--alt container" aria-labelledby="join-title">
+      <section className="section section--alt container" aria-labelledby="join-title" id="join">
         <div className="join-wrap">
           <div className="join-intro">
-            <h2 id="join-title" className="h2 h2--lg">Join the waitlist</h2>
+            <h2 id="join-title" className="h2 h2--lg">Reserve your spot</h2>
             <p className="join-lede">
-              Drop your email to lock in your spot. Then climb the list by sharing,
+              Drop your email to lock it in. Then climb the list by sharing,
               referring, and inviting friends.
             </p>
             <ul className="join-bullets">
@@ -115,8 +162,11 @@ export default function HomePage() {
               waitlist={WAITLIST_SLUG}
               baseUrl={BASE_URL || undefined}
               logo={<HanzoMark size={28} />}
-              title="Reserve your spot"
+              title="Join the waitlist"
               subtitle="Free and instant. No spam."
+              onSuccess={(entry) => {
+                setCached({ email: entry.email, rank: entry.rank, refCode: entry.refCode })
+              }}
             />
           </div>
         </div>
@@ -125,7 +175,7 @@ export default function HomePage() {
       <footer className="footer container">
         <div className="footer__row">
           <div className="footer__brand">
-            <HanzoMark size={22} />
+            <HanzoMark size={20} />
             <span>Hanzo &middot; built on Base</span>
           </div>
           <div className="footer__meta">MIT &middot; one way to do it</div>

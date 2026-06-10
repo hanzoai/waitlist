@@ -232,6 +232,18 @@
   color: var(--hw-accent, var(--hw-fg));
   margin: 6px 0 2px;
   font-variant-numeric: tabular-nums;
+  animation: hw-rank-pop 480ms cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center bottom;
+}
+
+@keyframes hw-rank-pop {
+  0%   { opacity: 0; transform: scale(0.6); }
+  60%  { opacity: 1; transform: scale(1.08); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hanzo-waitlist__rank { animation: none; }
 }
 
 .hanzo-waitlist__rank::before {
@@ -636,6 +648,27 @@
   display: flex;
   justify-content: center;
   margin-top: 16px;
+}
+
+.hanzo-waitlist-lb__more {
+  min-width: 160px;
+  padding: 10px 18px;
+}
+
+.hanzo-waitlist-lb__exhausted {
+  font-size: 12px;
+  color: var(--hw-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hanzo-waitlist-lb__empty {
+  display: list-item;
+  list-style: none;
+  padding: 24px 0;
+  text-align: center;
+  color: var(--hw-muted);
+  font-size: 14px;
 }
 
 /* Modal mode trigger button. */
