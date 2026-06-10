@@ -1,5 +1,5 @@
 {
-  "name": "@v-waitlist/web",
+  "name": "@hanzo/waitlist-demo",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,13 +9,17 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "^14.2.0"
+    "@hanzo/waitlist": "workspace:*",
+    "next": "^16.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/react": "19.2.9",
-    "eslint": "^8.0.0",
-    "eslint-config-next": "^14.2.0",
-    "typescript": "^5.0.0"
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^16.0.0",
+    "typescript": "^5.9.0"
   }
 }

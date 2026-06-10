@@ -1,43 +1,18 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "name": "v-waitlist",
   "version": 2,
-  "buildCommand": "pnpm --filter @v-waitlist/api build",
-  "outputDirectory": "apps/api/.next",
+  "buildCommand": "pnpm --filter @hanzo/waitlist build && pnpm --filter @hanzo/waitlist-demo build",
+  "outputDirectory": "apps/web/.next",
   "installCommand": "pnpm install",
   "framework": "nextjs",
-  "regions": ["iad1"],
   "env": {
-    "UPSTASH_REDIS_REST_URL": {
-      "description": "Your Upstash Redis REST API URL (get from https://upstash.com)",
+    "NEXT_PUBLIC_BASE_URL": {
+      "description": "URL of the Hanzo Base server running the waitlist plugin (e.g. https://api.example.com).",
       "required": true
     },
-    "UPSTASH_REDIS_REST_TOKEN": {
-      "description": "Your Upstash Redis REST API Token (get from https://upstash.com)",
-      "required": true
-    },
-    "TURNSTILE_SITE_KEY": {
-      "description": "Cloudflare Turnstile Site Key (get from https://dash.cloudflare.com)",
-      "required": false,
-      "value": ""
-    },
-    "TURNSTILE_SECRET_KEY": {
-      "description": "Cloudflare Turnstile Secret Key (get from https://dash.cloudflare.com)",
-      "required": false,
-      "value": ""
-    },
-    "ADMIN_SECRET_KEY": {
-      "description": "Secret key for exporting data (generate a secure random string)",
-      "required": true
-    }
-  },
-  "build": {
-    "env": {
-      "UPSTASH_REDIS_REST_URL": "@upstash-redis-url",
-      "UPSTASH_REDIS_REST_TOKEN": "@upstash-redis-token",
-      "TURNSTILE_SITE_KEY": "@turnstile-site-key",
-      "TURNSTILE_SECRET_KEY": "@turnstile-secret-key",
-      "ADMIN_SECRET_KEY": "@admin-secret-key"
+    "NEXT_PUBLIC_WAITLIST_SLUG": {
+      "description": "Slug of the waitlist record on the Base server. Defaults to `demo`.",
+      "required": false
     }
   }
 }

@@ -1,0 +1,128 @@
+// Browser-safe REST client for a Hanzo Base waitlist plugin.
+//
+// The client speaks the /v1/waitlist/{join,status,export} surface. It has
+// no React or DOM dependency — safe to use from server code, Node tools,
+// or other frontends.
+
+export interface JoinInput {
+  /** Waitlist slug or id, as configured on the Base server. */
+  waitlist: string
+  email: string
+  /** Optional referral code from the URL `?ref=<code>` parameter. */
+  referrerCode?: string
+  /** Cloudflare Turnstile token, if Turnstile is enabled server-side. */
+  turnstileToken?: string
+}
+
+export interface StatusInput {
+  waitlist: string
+  email: string
+}
+
+export interface WaitlistEntry {
+  ok: true
+  waitlist: string
+  email: string
+  refCode: string
+  rank: number
+  total: number
+  referralCount: number
+  shareUrl: string
+  alreadyJoined?: boolean
+  aheadOf?: number
+}
+
+export interface ApiError {
+  ok: false
+  status: number
+  message: string
+  data?: unknown
+}
+
+export type Result<T> = T | ApiError
+
+export interface ClientOptions {
+  /**
+   * Base URL of the Hanzo Base server, e.g. `https://api.example.com`.
+   * Defaults to the current page origin.
+   */
+  baseUrl?: string
+  /**
+   * Optional path prefix to prepend before `/v1/waitlist`. Useful when
+   * Base is mounted under a sub-path (`BASE_API_PREFIX=/v1/foo`).
+   * Should NOT include `/v1` — defaults to empty.
+   */
+  pathPrefix?: string
+  /** Optional fetch override, for testing or custom transports. */
+  fetch?: typeof fetch
+}
+
+export class WaitlistClient {
+  private readonly baseUrl: string
+  private readonly prefix: string
+  private readonly fetchFn: typeof fetch
+
+  constructor(opts: ClientOptions = {}) {
+    this.baseUrl = (opts.baseUrl ?? (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/$/, '')
+    this.prefix = (opts.pathPrefix ?? '').replace(/\/$/, '')
+    this.fetchFn = opts.fetch ?? (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : (() => { throw new Error('fetch is not available') })()) as typeof fetch
+  }
+
+  private url(path: string): string {
+    return `${this.baseUrl}${this.prefix}/v1/waitlist${path}`
+  }
+
+  async join(input: JoinInput): Promise<Result<WaitlistEntry>> {
+    const res = await this.fetchFn(this.url('/join'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+    return this.parse(res)
+  }
+
+  async status(input: StatusInput): Promise<Result<WaitlistEntry>> {
+    const q = new URLSearchParams({ waitlist: input.waitlist, email: input.email })
+    const res = await this.fetchFn(this.url(`/status?${q}`), { method: 'GET' })
+    return this.parse(res)
+  }
+
+  /**
+   * Returns a CSV string. Requires either a superuser auth cookie/token
+   * already attached to the request, OR an admin secret passed via
+   * `Authorization: Bearer <secret>`.
+   */
+  async exportCsv(waitlist: string, init: { authorization?: string } = {}): Promise<string> {
+    const q = new URLSearchParams({ waitlist })
+    const headers: Record<string, string> = {}
+    if (init.authorization) headers.Authorization = init.authorization
+    const res = await this.fetchFn(this.url(`/export?${q}`), { method: 'GET', headers })
+    if (!res.ok) throw new Error(`export failed: ${res.status} ${await res.text()}`)
+    return res.text()
+  }
+
+  private async parse(res: Response): Promise<Result<WaitlistEntry>> {
+    let body: unknown = null
+    try {
+      body = await res.json()
+    } catch {
+      // fall through
+    }
+    if (!res.ok) {
+      const msg = (body && typeof body === 'object' && 'message' in body && typeof (body as { message: unknown }).message === 'string')
+        ? (body as { message: string }).message
+        : `request failed with ${res.status}`
+      return { ok: false, status: res.status, message: msg, data: body }
+    }
+    return body as WaitlistEntry
+  }
+}
+
+/** Convenience one-shot client. */
+export async function join(input: JoinInput, opts?: ClientOptions): Promise<Result<WaitlistEntry>> {
+  return new WaitlistClient(opts).join(input)
+}
+
+export async function status(input: StatusInput, opts?: ClientOptions): Promise<Result<WaitlistEntry>> {
+  return new WaitlistClient(opts).status(input)
+}
