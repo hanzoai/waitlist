@@ -32,6 +32,30 @@ export interface WaitlistEntry {
   aheadOf?: number
 }
 
+export interface ListInput {
+  waitlist: string
+  page?: number
+  pageSize?: number
+}
+
+export interface LeaderboardEntry {
+  rank: number
+  email: string         // masked unless admin auth attached
+  refCode: string | null
+  referralCount: number
+  createdAt: string
+}
+
+export interface LeaderboardPage {
+  ok: true
+  waitlist: string
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+  entries: LeaderboardEntry[]
+}
+
 export interface ApiError {
   ok: false
   status: number
@@ -87,6 +111,14 @@ export class WaitlistClient {
     return this.parse(res)
   }
 
+  async list(input: ListInput): Promise<Result<LeaderboardPage>> {
+    const q = new URLSearchParams({ waitlist: input.waitlist })
+    if (input.page) q.set('page', String(input.page))
+    if (input.pageSize) q.set('pageSize', String(input.pageSize))
+    const res = await this.fetchFn(this.url(`/list?${q}`), { method: 'GET' })
+    return this.parseGeneric<LeaderboardPage>(res)
+  }
+
   /**
    * Returns a CSV string. Requires either a superuser auth cookie/token
    * already attached to the request, OR an admin secret passed via
@@ -102,19 +134,19 @@ export class WaitlistClient {
   }
 
   private async parse(res: Response): Promise<Result<WaitlistEntry>> {
+    return this.parseGeneric<WaitlistEntry>(res)
+  }
+
+  private async parseGeneric<T>(res: Response): Promise<Result<T>> {
     let body: unknown = null
-    try {
-      body = await res.json()
-    } catch {
-      // fall through
-    }
+    try { body = await res.json() } catch { /* fall through */ }
     if (!res.ok) {
       const msg = (body && typeof body === 'object' && 'message' in body && typeof (body as { message: unknown }).message === 'string')
         ? (body as { message: string }).message
         : `request failed with ${res.status}`
       return { ok: false, status: res.status, message: msg, data: body }
     }
-    return body as WaitlistEntry
+    return body as T
   }
 }
 

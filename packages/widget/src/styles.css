@@ -217,6 +217,15 @@
   margin-right: 2px;
 }
 
+.hanzo-waitlist__of {
+  margin: -4px 0 12px;
+  font-size: 13px;
+  color: var(--hw-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
 .hanzo-waitlist__meta {
   color: var(--hw-muted);
   font-size: 13px;
@@ -242,6 +251,102 @@
   font-size: 12px;
   color: var(--hw-muted);
   text-align: center;
+}
+
+/* Leaderboard */
+
+.hanzo-waitlist-lb {
+  max-width: none;
+  width: 100%;
+}
+
+.hanzo-waitlist-lb__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.hanzo-waitlist-lb__head .hanzo-waitlist__subtitle {
+  margin: 4px 0 0;
+}
+
+.hanzo-waitlist-lb__pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hanzo-waitlist-lb__pager .hanzo-waitlist__button {
+  padding: 6px 10px;
+  font-size: 13px;
+  min-width: 36px;
+}
+
+.hanzo-waitlist-lb__pageinfo {
+  font-variant-numeric: tabular-nums;
+  color: var(--hw-muted);
+  font-size: 13px;
+  min-width: 80px;
+  text-align: center;
+}
+
+.hanzo-waitlist-lb__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border-top: 1px solid var(--hw-border);
+}
+
+.hanzo-waitlist-lb__row {
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--hw-border);
+  font-size: 14px;
+}
+
+.hanzo-waitlist-lb__row[data-mine="true"] {
+  background: color-mix(in srgb, var(--hw-accent, var(--hw-fg)) 8%, transparent);
+  font-weight: 600;
+}
+
+.hanzo-waitlist-lb__rank {
+  color: var(--hw-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  letter-spacing: -0.02em;
+}
+
+.hanzo-waitlist-lb__row[data-mine="true"] .hanzo-waitlist-lb__rank {
+  color: var(--hw-accent, var(--hw-fg));
+  font-weight: 700;
+}
+
+.hanzo-waitlist-lb__email {
+  font-family: var(--hw-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 13px;
+  color: var(--hw-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hanzo-waitlist-lb__refs {
+  color: var(--hw-fg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  padding-left: 8px;
+}
+
+.hanzo-waitlist-lb__foot {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
 }
 
 /* Modal mode trigger button. */

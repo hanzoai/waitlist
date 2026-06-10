@@ -91,6 +91,14 @@ function entryToJoinResponse(list, entry, alreadyJoined) {
   }
 }
 
+// Mask local-part of email for non-admin views: alice@example.com -> a***e@example.com.
+function maskEmail(email) {
+  const at = email.indexOf('@')
+  if (at < 2) return '*'.repeat(Math.max(1, at)) + email.slice(at)
+  const local = email.slice(0, at)
+  return local[0] + '*'.repeat(Math.max(1, local.length - 2)) + local[local.length - 1] + email.slice(at)
+}
+
 function entryToStatusResponse(list, entry) {
   const { rank, total } = computeRank(list, entry)
   return {
@@ -207,6 +215,39 @@ function handleStatus(req, url, res) {
   return send(res, 200, entryToStatusResponse(list, entry))
 }
 
+function handleList(req, url, res) {
+  const slug = (url.searchParams.get('waitlist') || '').trim()
+  if (!slug) return err(res, 400, 'waitlist is required')
+  const list = lists.get(slug)
+  if (!list) return send(res, 200, { ok: true, entries: [], page: 1, pageSize: 0, total: 0 })
+
+  const page = Math.max(1, Number(url.searchParams.get('page') || 1))
+  const pageSize = Math.max(1, Math.min(500, Number(url.searchParams.get('pageSize') || 100)))
+  const isAdmin = !!ADMIN_SECRET && (req.headers['authorization'] || '') === `Bearer ${ADMIN_SECRET}`
+
+  const sorted = [...list.entries.values()].sort(
+    (a, b) => b.referralCount - a.referralCount || a.createdAt - b.createdAt
+  )
+  const total = sorted.length
+  const start = (page - 1) * pageSize
+  const slice = sorted.slice(start, start + pageSize).map((e, i) => ({
+    rank: start + i + 1,
+    email: isAdmin ? e.email : maskEmail(e.email),
+    refCode: isAdmin ? e.refCode : null,
+    referralCount: e.referralCount,
+    createdAt: new Date(e.createdAt).toISOString(),
+  }))
+  send(res, 200, {
+    ok: true,
+    waitlist: slug,
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    entries: slice,
+  })
+}
+
 function handleExport(req, url, res) {
   const auth = req.headers['authorization'] || ''
   if (!ADMIN_SECRET || auth !== `Bearer ${ADMIN_SECRET}`) {
@@ -249,6 +290,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'POST' && url.pathname === '/v1/waitlist/join') return await handleJoin(req, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/status') return handleStatus(req, url, res)
+    if (req.method === 'GET'  && url.pathname === '/v1/waitlist/list')   return handleList(req, url, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/export') return handleExport(req, url, res)
   } catch (e) {
     console.error('[mock-api]', e)
@@ -258,7 +300,67 @@ const server = http.createServer(async (req, res) => {
   err(res, 404, 'not found')
 })
 
+// Optional seed mode: SEED=1200 SEED_SLUG=demo creates a realistic
+// distribution of entries. Referral counts follow a Zipf-ish curve so
+// the top of the leaderboard has the usual handful of power-referrers
+// while most entries sit at 0. Determined entirely by a fixed PRNG seed
+// so reloads show identical data.
+function seedList(slug, n) {
+  const list = listOf(slug)
+  // Tiny deterministic PRNG (xmur3 + mulberry32).
+  function xmur3(str) {
+    let h = 1779033703 ^ str.length
+    for (let i = 0; i < str.length; i++) {
+      h = Math.imul(h ^ str.charCodeAt(i), 3432918353); h = (h << 13) | (h >>> 19)
+    }
+    return () => { h = Math.imul(h ^ (h >>> 16), 2246822507); h = Math.imul(h ^ (h >>> 13), 3266489909); return (h ^= h >>> 16) >>> 0 }
+  }
+  function mulberry32(a) {
+    return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+  }
+  const seed = xmur3(`hanzo-waitlist:${slug}:${n}`)
+  const rand = mulberry32(seed())
+
+  const FIRST = ['alex','sam','jordan','taylor','riley','casey','morgan','jamie','avery','quinn','rowan','sage','blair','reese','drew','hayden','parker','skylar','emerson','finley','iris','kai','leo','mia','nora','owen','piper','ruby','theo','vera','wren','zoe','aria','ben','cleo','dax','eve','felix','gus','holly']
+  const LAST  = ['ng','park','silva','chen','khan','okafor','ivanov','rossi','dubois','schmidt','garcia','tanaka','novak','vega','khanna','singh','muller','smith','jones','brown','davis','wilson','moore','taylor','andrade','kobayashi','larsen','vasquez','popescu','romero','holm','lindberg','laine','aalto','seppanen','dubois','beauchamp']
+  const TLD   = ['com','io','dev','xyz','co','app','net','me']
+
+  function syntheticEmail(i) {
+    const f = FIRST[Math.floor(rand() * FIRST.length)]
+    const l = LAST[Math.floor(rand() * LAST.length)]
+    const t = TLD[Math.floor(rand() * TLD.length)]
+    return `${f}.${l}${i}@example.${t}`
+  }
+
+  const start = Date.now() - n * 60_000 // backdate so createdAt order is stable
+  for (let i = 0; i < n; i++) {
+    const email = syntheticEmail(i)
+    let refCode = ''
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const cand = genRefCode()
+      if (![...list.entries.values()].some((e) => e.refCode === cand)) { refCode = cand; break }
+    }
+    // Zipf-ish: rank^-1.4 normalized to roughly produce top ~40 referrals.
+    const referralCount = Math.max(0, Math.floor(40 * Math.pow(1 / Math.max(1, i + 1), 1.4) + (rand() < 0.04 ? Math.floor(rand() * 6) : 0)))
+    list.entries.set(email, {
+      waitlist: slug,
+      email,
+      refCode,
+      referredBy: '',
+      referralCount,
+      createdAt: start + i * 60_000,
+    })
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`[mock-api] /v1/waitlist/* on http://localhost:${PORT}`)
   if (!ADMIN_SECRET) console.log('[mock-api] WAITLIST_ADMIN_SECRET unset — /v1/waitlist/export disabled')
+
+  const seedN = Number(process.env.SEED || 0)
+  if (seedN > 0) {
+    const slug = process.env.SEED_SLUG || 'demo'
+    seedList(slug, seedN)
+    console.log(`[mock-api] seeded "${slug}" with ${seedN} entries`)
+  }
 })
