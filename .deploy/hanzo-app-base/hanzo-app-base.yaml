@@ -1,0 +1,232 @@
+# hanzo-app-base — dedicated Hanzo Base instance for hanzo.app project metadata.
+#
+# SQLite-only (no mongo/postgres/redis/kv). IAM-native against hanzo.id: the
+# Base `platform` plugin validates every bearer token against hanzo.id JWKS and
+# runs external-auth-only. Internal ClusterIP — only hanzo.app's server calls it
+# (enforced by the NetworkPolicy below). The `projects` collection is defined by
+# the JS migration in the configmap, applied at boot via --automigrate.
+#
+# This is a SEPARATE instance from the shared `platform` Base — its own PVC,
+# its own data. Nothing here touches platform's deployment or data.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hanzo-app-base-data
+  namespace: hanzo
+  labels:
+    app: hanzo-app-base
+    app.kubernetes.io/name: hanzo-app-base
+    app.kubernetes.io/part-of: hanzo-app
+    app.kubernetes.io/component: backend
+spec:
+  accessModes:
+    - ReadWriteOnce # SQLite single-writer; matches Recreate strategy + 1 replica
+  storageClassName: do-block-storage
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hanzo-app-base-migrations
+  namespace: hanzo
+  labels:
+    app: hanzo-app-base
+    app.kubernetes.io/name: hanzo-app-base
+    app.kubernetes.io/part-of: hanzo-app
+    app.kubernetes.io/component: backend
+data:
+  # Filename must end in .js so jsvm's MigrationsFilesPattern picks it up.
+  1750000000_projects.js: |
+    // hanzo-app project metadata collection.
+    //
+    // One shared base collection, one row per (user_id, space_id). hanzo.app's
+    // server is the trust boundary: it authenticates the end user via hanzo.id
+    // (IAM/OIDC), then talks to this Base with the user's IAM bearer token and
+    // ALWAYS scopes every query by user_id = the IAM `sub`. Base validates the
+    // token against hanzo.id JWKS; the rules below only assert "a valid IAM
+    // user" — per-user isolation is enforced by hanzo.app's filter, and the
+    // NetworkPolicy pins the only caller to hanzo-app pods.
+    migrate((app) => {
+      const collection = new Collection({
+        type: "base",
+        name: "projects",
+        listRule: "@request.auth.id != ''",
+        viewRule: "@request.auth.id != ''",
+        createRule: "@request.auth.id != ''",
+        updateRule: "@request.auth.id != ''",
+        deleteRule: "@request.auth.id != ''",
+        fields: [
+          { name: "user_id", type: "text", required: true, min: 1, max: 255 },
+          { name: "space_id", type: "text", required: true, min: 1, max: 255 },
+          { name: "prompts", type: "json", maxSize: 1048576 },
+          { name: "created", type: "autodate", onCreate: true, onUpdate: false },
+          { name: "updated", type: "autodate", onCreate: true, onUpdate: true },
+        ],
+        indexes: [
+          "CREATE UNIQUE INDEX `idx_projects_user_space` ON `projects` (`user_id`, `space_id`)",
+          "CREATE INDEX `idx_projects_user_created` ON `projects` (`user_id`, `created`)",
+        ],
+      });
+
+      return app.save(collection);
+    }, (app) => {
+      const collection = app.findCollectionByNameOrId("projects");
+
+      return app.delete(collection);
+    });
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hanzo-app-base
+  namespace: hanzo
+  labels:
+    app: hanzo-app-base
+    app.kubernetes.io/name: hanzo-app-base
+    app.kubernetes.io/part-of: hanzo-app
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 1 # SQLite single-writer — never scale past 1
+  strategy:
+    type: Recreate # RWO volume can't multi-attach; never run two writers
+  selector:
+    matchLabels:
+      app: hanzo-app-base
+  template:
+    metadata:
+      labels:
+        app: hanzo-app-base
+        app.kubernetes.io/name: hanzo-app-base
+        app.kubernetes.io/part-of: hanzo-app
+        app.kubernetes.io/component: backend
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: base
+          image: ghcr.io/hanzoai/base:0.39.11
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --http=0.0.0.0:8090
+            - --dir=/data
+            - --migrationsDir=/migrations
+            - --automigrate # apply the JS migration (projects) at boot
+            - --origins=https://hanzo.app
+          env:
+            # IAM-native. Image base:0.39.11 reads IAM_ENDPOINT/KMS_ENDPOINT
+            # (the platform plugin's canonical names). With a non-empty
+            # IAM_ENDPOINT the plugin runs external-auth-only and validates
+            # every bearer token against <endpoint>/.well-known/jwks. The
+            # IAM_URL/KMS_URL aliases are kept for forward-compat with newer
+            # base builds whose entrypoint reads those names.
+            - name: IAM_ENDPOINT
+              value: https://hanzo.id
+            - name: KMS_ENDPOINT
+              value: https://kms.hanzo.ai
+            - name: IAM_URL
+              value: https://hanzo.id
+            - name: KMS_URL
+              value: https://kms.hanzo.ai
+            # API mounts at /v1 by default (no /api/ prefix). Pinned explicitly.
+            - name: BASE_API_PREFIX
+              value: /v1
+          ports:
+            - name: http
+              containerPort: 8090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz # prefix-independent root health route
+              port: 8090
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hanzo-app-base-data
+        - name: migrations
+          configMap:
+            name: hanzo-app-base-migrations
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hanzo-app-base
+  namespace: hanzo
+  labels:
+    app: hanzo-app-base
+    app.kubernetes.io/name: hanzo-app-base
+    app.kubernetes.io/part-of: hanzo-app
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP # internal only — no ingress
+  selector:
+    app: hanzo-app-base
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+      protocol: TCP
+---
+# Only hanzo.app's pods may reach this Base. Closes the "any in-cluster caller
+# with a valid IAM JWT" gap: the projects collection rules assert "valid IAM
+# user", and this policy guarantees the only source is hanzo-app.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hanzo-app-base
+  namespace: hanzo
+  labels:
+    app: hanzo-app-base
+    app.kubernetes.io/name: hanzo-app-base
+    app.kubernetes.io/part-of: hanzo-app
+spec:
+  podSelector:
+    matchLabels:
+      app: hanzo-app-base
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hanzo-app
+      ports:
+        - protocol: TCP
+          port: 8090
