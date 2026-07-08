@@ -24,6 +24,10 @@ export interface PointBreakdown {
   shares: number
   invitesSent: number
   invitesConverted: number
+  /** Points from verified social follows/joins (X, Discord, Telegram, ...). */
+  social?: number
+  /** Points from running a hanzod node. */
+  hanzod?: number
 }
 
 export interface PointValues {
@@ -82,7 +86,7 @@ export interface InviteResponse {
   pointBreakdown: PointBreakdown
 }
 
-export type ActivityType = 'join' | 'share' | 'invite' | 'referral'
+export type ActivityType = 'join' | 'share' | 'invite' | 'referral' | 'social' | 'hanzod'
 
 export interface ActivityEvent {
   ts: number
@@ -131,6 +135,33 @@ export interface LeaderboardPage {
   total: number
   totalPages: number
   entries: LeaderboardEntry[]
+}
+
+export interface NeighborhoodInput {
+  waitlist: string
+  email: string
+  /** How many entries to show above and below the caller (1..100, default 25). */
+  window?: number
+}
+
+export interface NeighborRow {
+  rank: number
+  email: string           // masked
+  points: number
+  referralCount: number
+  isMe?: boolean
+}
+
+export interface NeighborhoodResponse {
+  ok: true
+  waitlist: string
+  email: string
+  rank: number
+  total: number
+  points: number
+  window: number
+  /** The caller and its nearest neighbors, ordered by rank (best first). */
+  entries: NeighborRow[]
 }
 
 export interface ApiError {
@@ -194,6 +225,19 @@ export class WaitlistClient {
     if (input.pageSize) q.set('pageSize', String(input.pageSize))
     const res = await this.fetchFn(this.url(`/list?${q}`), { method: 'GET' })
     return this.parseGeneric<LeaderboardPage>(res)
+  }
+
+  /**
+   * The scalable "around me" leaderboard view: the caller's absolute rank in a
+   * list of any size, plus the `window` entries just above and below. Backed by
+   * keyset index seeks server-side, so it stays cheap (~0.1ms) even on a
+   * multi-million-row list — never fetch the whole leaderboard to show a slice.
+   */
+  async neighborhood(input: NeighborhoodInput): Promise<Result<NeighborhoodResponse>> {
+    const q = new URLSearchParams({ waitlist: input.waitlist, email: input.email })
+    if (input.window) q.set('window', String(input.window))
+    const res = await this.fetchFn(this.url(`/neighborhood?${q}`), { method: 'GET' })
+    return this.parseGeneric<NeighborhoodResponse>(res)
   }
 
   async trackShare(input: TrackShareInput): Promise<Result<TrackShareResponse>> {

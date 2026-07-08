@@ -10,12 +10,15 @@
 //   PORT=8090 node server.js
 //
 // Endpoints:
-//   POST /v1/waitlist/join         { waitlist, email, referrerCode?, turnstileToken? }
+//   POST /v1/waitlist/join          { waitlist, email, referrerCode?, turnstileToken? }
 //   GET  /v1/waitlist/status?waitlist=&email=
+//   GET  /v1/waitlist/neighborhood?waitlist=&email=&window=   (rank +/- window)
 //   GET  /v1/waitlist/list?waitlist=&page=&pageSize=
 //   GET  /v1/waitlist/activity?waitlist=&limit=&types=
-//   POST /v1/waitlist/track-share  { waitlist, refCode, platform }
-//   POST /v1/waitlist/invite       { waitlist, refCode, emails: [...], message? }
+//   POST /v1/waitlist/track-share   { waitlist, refCode, platform }
+//   POST /v1/waitlist/invite        { waitlist, refCode, emails: [...], message? }
+//   POST /v1/waitlist/award         { waitlist, email|refCode, source, dedupKey?, points? }
+//                                   (Bearer auth via WAITLIST_AWARD_SECRET — verified social/hanzod)
 //   GET  /v1/waitlist/export?waitlist=    (Bearer auth via WAITLIST_ADMIN_SECRET)
 //
 // Points engine:
@@ -31,6 +34,9 @@ import crypto from 'node:crypto'
 
 const PORT = Number(process.env.PORT ?? 8090)
 const ADMIN_SECRET = process.env.WAITLIST_ADMIN_SECRET ?? ''
+// AWARD_SECRET gates the server-to-server POST /award (verified social / hanzod
+// events). Empty -> /award disabled (404), so it can never be forged publicly.
+const AWARD_SECRET = process.env.WAITLIST_AWARD_SECRET ?? ''
 const RATE_LIMIT = Number(process.env.WAITLIST_RATE_LIMIT ?? 5)
 const RATE_WINDOW_MS = 60 * 60 * 1000
 
@@ -40,11 +46,13 @@ const POINTS = {
   SHARE:             Number(process.env.POINTS_SHARE ?? 2),
   INVITE_SENT:       Number(process.env.POINTS_INVITE_SENT ?? 1),
   INVITE_CONVERTED:  Number(process.env.POINTS_INVITE_CONVERTED ?? 5),
+  SOCIAL:            Number(process.env.POINTS_SOCIAL ?? 15),
+  HANZOD:            Number(process.env.POINTS_HANZOD ?? 25),
 }
 const INVITE_MAX_BATCH = Number(process.env.WAITLIST_INVITE_MAX ?? 50)
 const ACTIVITY_MAX_HISTORY = Number(process.env.ACTIVITY_MAX_HISTORY ?? 200)
 const ACTIVITY_LIMIT_CAP = Number(process.env.ACTIVITY_LIMIT_CAP ?? 100)
-const ACTIVITY_TYPES = new Set(['join', 'share', 'invite', 'referral'])
+const ACTIVITY_TYPES = new Set(['join', 'share', 'invite', 'referral', 'social', 'hanzod'])
 const SHARE_PLATFORMS = new Set([
   'webshare','email','x','twitter','linkedin','facebook',
   'reddit','telegram','whatsapp','sms','copy','mastodon','bluesky','threads',
@@ -105,10 +113,39 @@ function isValidEmail(s) { return typeof s === 'string' && s.length <= 254 && EM
 function domain(email) { const i = email.lastIndexOf('@'); return i < 0 ? '' : email.slice(i+1).toLowerCase() }
 
 function totalPoints(entry) {
-  return (entry.pointBreakdown.referrals
-    + entry.pointBreakdown.shares
-    + entry.pointBreakdown.invitesSent
-    + entry.pointBreakdown.invitesConverted)
+  const b = entry.pointBreakdown
+  return (b.referrals + b.shares + b.invitesSent + b.invitesConverted
+    + (b.social || 0) + (b.hanzod || 0))
+}
+
+// categoryOf buckets an award source into a breakdown category. Open-ended:
+// a new social network is still "social", a new source adds its own key.
+function categoryOf(source) {
+  if (source === 'referral') return 'referrals'
+  if (source.startsWith('share:')) return 'shares'
+  if (source === 'invite_sent') return 'invitesSent'
+  if (source === 'invite_converted') return 'invitesConverted'
+  if (source.startsWith('social:')) return 'social'
+  if (source.startsWith('hanzod')) return 'hanzod'
+  return 'other'
+}
+
+// sourcePoints is the server-controlled award value — a caller of /award cannot
+// mint arbitrary points for a known source (only an explicit "grant" does).
+function sourcePoints(source) {
+  if (source === 'referral') return POINTS.REFERRAL
+  if (source.startsWith('share:')) return POINTS.SHARE
+  if (source === 'invite_sent') return POINTS.INVITE_SENT
+  if (source === 'invite_converted') return POINTS.INVITE_CONVERTED
+  if (source.startsWith('social:')) return POINTS.SOCIAL
+  if (source.startsWith('hanzod')) return POINTS.HANZOD
+  return 0
+}
+
+function validAwardSource(source) {
+  return source === 'referral' || source === 'invite_sent' || source === 'invite_converted' ||
+    source === 'grant' || source.startsWith('share:') || source.startsWith('social:') ||
+    source.startsWith('hanzod')
 }
 
 function computeRank(list, entry) {
@@ -264,9 +301,10 @@ async function handleJoin(req, res) {
     referralCount: 0,
     createdAt: Date.now(),
     // Gamification state.
-    pointBreakdown: { referrals: 0, shares: 0, invitesSent: 0, invitesConverted: 0 },
+    pointBreakdown: { referrals: 0, shares: 0, invitesSent: 0, invitesConverted: 0, social: 0, hanzod: 0 },
     sharedPlatforms: new Map(),  // platform -> last ISO date (yyyy-mm-dd)
     invitedEmails: new Set(),    // emails this entry has sent invitations to
+    awardedKeys: new Set(),      // (source, dedupKey) already credited — dedup spine
   }
   list.entries.set(email, entry)
   // Activity log: a join, and a separate referral event if applicable.
@@ -445,6 +483,80 @@ function handleActivity(req, url, res) {
   })
 }
 
+// --- POST /v1/waitlist/award (server-to-server, Bearer AWARD_SECRET) ---
+// The verified-event seam: a connector verifies a social follow/join or a
+// hanzod run, then calls this to credit points. Idempotent per (source,dedupKey).
+async function handleAward(req, res) {
+  if (!AWARD_SECRET) return err(res, 404, 'award disabled')
+  if ((req.headers['authorization'] || '') !== `Bearer ${AWARD_SECRET}`) {
+    return err(res, 401, 'award auth required')
+  }
+  let body
+  try { body = await readJson(req) } catch { return err(res, 400, 'invalid json') }
+  const slug = (body.waitlist || '').toString().trim()
+  const source = (body.source || '').toString().trim()
+  if (!slug || !source) return err(res, 400, 'waitlist and source are required')
+  if (!validAwardSource(source)) return err(res, 400, `unknown source: ${source}`)
+
+  const list = lists.get(slug)
+  if (!list) return err(res, 404, 'waitlist not found')
+  const email = (body.email || '').toString().trim().toLowerCase()
+  const refCode = (body.refCode || '').toString().trim()
+  const entry = email ? list.entries.get(email) : findEntryByRefCode(list, refCode)
+  if (!entry) return err(res, 404, 'entry not found')
+
+  let pts = sourcePoints(source)
+  if (source === 'grant' && typeof body.points === 'number') pts = body.points
+  let dedupKey = (body.dedupKey || '').toString().trim()
+  if (!dedupKey && source !== 'grant') dedupKey = source
+  const key = `${source}|${dedupKey}`
+  const already = dedupKey ? entry.awardedKeys.has(key) : false
+  if (!already) {
+    if (dedupKey) entry.awardedKeys.add(key)
+    const cat = categoryOf(source)
+    entry.pointBreakdown[cat] = (entry.pointBreakdown[cat] || 0) + pts
+    if (source.startsWith('social:')) {
+      pushActivity(list, { type: 'social', who: maskEmail(entry.email), platform: source.split(':')[1] || '' })
+    } else if (source.startsWith('hanzod')) {
+      pushActivity(list, { type: 'hanzod', who: maskEmail(entry.email) })
+    }
+  }
+  const { rank, total } = computeRank(list, entry)
+  return send(res, 200, {
+    ok: true, awarded: already ? 0 : pts, alreadyAwarded: already, source,
+    email: entry.email, points: totalPoints(entry),
+    pointBreakdown: { ...entry.pointBreakdown }, rank, total,
+  })
+}
+
+// --- GET /v1/waitlist/neighborhood?waitlist=&email=&window= ---
+// The scalable "around me" view: the caller's rank plus the `window` entries
+// just above and below — never the whole list.
+function handleNeighborhood(req, url, res) {
+  const slug = (url.searchParams.get('waitlist') || '').trim()
+  const email = (url.searchParams.get('email') || '').trim().toLowerCase()
+  if (!slug || !email) return err(res, 400, 'waitlist and email are required')
+  const list = lists.get(slug)
+  if (!list) return err(res, 404, 'waitlist not found')
+  const entry = list.entries.get(email)
+  if (!entry) return err(res, 404, 'entry not found')
+
+  const window = Math.max(1, Math.min(100, Number(url.searchParams.get('window') || 25)))
+  const all = [...list.entries.values()].sort(
+    (a, b) => totalPoints(b) - totalPoints(a) || a.createdAt - b.createdAt)
+  const idx = all.findIndex((e) => e.email === entry.email)
+  const start = Math.max(0, idx - window)
+  const end = Math.min(all.length, idx + window + 1)
+  const rows = all.slice(start, end).map((e, i) => ({
+    rank: start + i + 1, email: maskEmail(e.email), points: totalPoints(e),
+    referralCount: e.referralCount, ...(e.email === entry.email ? { isMe: true } : {}),
+  }))
+  return send(res, 200, {
+    ok: true, waitlist: slug, email, rank: idx + 1, total: all.length,
+    points: totalPoints(entry), window, entries: rows,
+  })
+}
+
 function handleExport(req, url, res) {
   const auth = req.headers['authorization'] || ''
   if (!ADMIN_SECRET || auth !== `Bearer ${ADMIN_SECRET}`) {
@@ -487,6 +599,8 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'POST' && url.pathname === '/v1/waitlist/join') return await handleJoin(req, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/status') return handleStatus(req, url, res)
+    if (req.method === 'GET'  && url.pathname === '/v1/waitlist/neighborhood') return handleNeighborhood(req, url, res)
+    if (req.method === 'POST' && url.pathname === '/v1/waitlist/award')  return await handleAward(req, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/list')   return handleList(req, url, res)
     if (req.method === 'GET'  && url.pathname === '/v1/waitlist/activity') return handleActivity(req, url, res)
     if (req.method === 'POST' && url.pathname === '/v1/waitlist/track-share') return await handleTrackShare(req, res)
@@ -559,9 +673,12 @@ function seedList(slug, n) {
         shares: shareEvents * POINTS.SHARE,
         invitesSent: invitesSent * POINTS.INVITE_SENT,
         invitesConverted: invitesConverted * POINTS.INVITE_CONVERTED,
+        social: 0,
+        hanzod: 0,
       },
       sharedPlatforms: new Map(),
       invitedEmails: new Set(),
+      awardedKeys: new Set(),
     })
   }
   // Seed recent activity so the live ticker shows action on first page load.
