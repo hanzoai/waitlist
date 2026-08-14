@@ -1,8 +1,9 @@
 name: Build image
 
-# Builds + pushes ghcr.io/hanzoai/waitlist on a v* semver tag via the
-# canonical reusable workflow, natively on the self-hosted arcd fleet
-# (NO GitHub-hosted runners). Semver-only tags. Deployable on DOKS.
+# Builds + pushes ghcr.io/hanzoai/waitlist on a v* semver tag via the canonical
+# reusable workflow, on the git-runner fleet at git.hanzo.ai. Semver-only tags.
+# (The arcd pool this used to name was retired 2026-08-01; the reusable's
+# runner defaults already point at the fleet labels.)
 on:
   push:
     tags: ['v*']
