@@ -1,0 +1,9 @@
+# Hanzo CI/CD for hanzoai/waitlist: .github/workflows/cicd.yml imports hanzoai/ci,
+# which reads this file. The build door builds each image, one BuildKit Job
+# per platform.
+images:
+  - name: waitlist
+    context: .
+    dockerfile: Dockerfile
+    repo: ghcr.io/hanzoai/waitlist
+    platforms: [linux/amd64]
